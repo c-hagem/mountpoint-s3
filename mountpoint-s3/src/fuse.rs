@@ -6,7 +6,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::time::SystemTime;
 use time::OffsetDateTime;
-use tracing::{field, instrument, Instrument};
+use tracing::{field, instrument, Instrument, debug};
 
 use crate::fs::{DirectoryEntry, DirectoryReplier, InodeNo, S3Filesystem, ToErrno};
 use crate::prefetch::Prefetch;
@@ -365,6 +365,11 @@ where
         flags: Option<u32>,
         reply: ReplyAttr,
     ) {
+        // We only support atime / mtime, so ensure that all other fields are not set.
+        match (_mode, _uid, _gid, _ctime, _fh, _crtime, _chgtime, _bkuptime) {
+            (None, None, None, None, None, None, None, None) => {}
+            _ => {fuse_unsupported!("setattr", reply); return;}
+        }
         let atime = atime.map(|t| match t {
             TimeOrNow::SpecificTime(st) => OffsetDateTime::from(st),
             TimeOrNow::Now => OffsetDateTime::now_utc(),
