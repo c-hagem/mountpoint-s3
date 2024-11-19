@@ -137,6 +137,7 @@ fn detect_fusermount_bin() -> String {
             return name.to_string();
         }
     }
+    debug!("Unable to locate fusermount binary.");
     // Default to fusermount3
     FUSERMOUNT3_BIN.to_string()
 }

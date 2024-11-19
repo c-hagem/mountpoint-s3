@@ -14,8 +14,6 @@ RUN sed -i s/^mirrorlist=http/#mirrorlist=https/g /etc/yum.repos.d/*.repo
 RUN if [ `uname -p` == "aarch64" ]; then sed -i s+centos/7+altarch/7+g /etc/yum.repos.d/*.repo; fi
 
 RUN yum install -y \
-        fuse \
-        fuse-devel \
         make \
         cmake3 \
         git \

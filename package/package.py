@@ -61,13 +61,13 @@ def check_dependencies(args: argparse.Namespace):
         if shutil.which(dep) is None:
             raise Exception(f"`{dep}` must be installed")
 
-    output = run(["whereis", "libfuse"])
-    if b"libfuse.so" not in output:
-        raise Exception(f"libfuse not found (whereis output: {output})")
+    #output = run(["whereis", "libfuse"])
+    #if b"libfuse.so" not in output:
+    #    raise Exception(f"libfuse not found (whereis output: {output})")
 
-    output = run(["whereis", "libfuse3"])
-    if b"libfuse3.so" in output:
-        raise Exception(f"libfuse3 should not be installed (whereis output: {output})")
+    #output = run(["whereis", "libfuse3"])
+    #if b"libfuse3.so" in output:
+    #    raise Exception(f"libfuse3 should not be installed (whereis output: {output})")
 
 
 def get_build_metadata(args: argparse.Namespace) -> BuildMetadata:
