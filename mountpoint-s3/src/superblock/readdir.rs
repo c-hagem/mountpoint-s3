@@ -517,8 +517,9 @@ mod ordered {
 ///
 /// See [self::ReaddirIter] for exact behavior differences.
 mod unordered {
-    use std::collections::HashMap;
-
+    use std::cmp::Reverse;
+    use std::collections::{BinaryHeap, HashMap};
+    use log::debug;
     use super::*;
 
     /// An iterator over [ReaddirEntry]s for a directory, where the remote entries are not available
@@ -532,6 +533,7 @@ mod unordered {
         local: HashMap<String, ReaddirEntry>,
         /// Queue of local entries to be returned, prepared based on the contents of [Self::local].
         local_iter: VecDeque<ReaddirEntry>,
+        heap: BinaryHeap<ReaddirEntry>
     }
 
     impl ReaddirIter {
@@ -550,22 +552,47 @@ mod unordered {
                     (lookup.inode.name().to_owned(), entry)
                 })
                 .collect::<HashMap<_, _>>();
-
             Self {
                 remote: RemoteIter::new(bucket, full_path, page_size, false),
                 local: local_map,
                 local_iter: VecDeque::new(),
+                heap: BinaryHeap::new(),
             }
         }
 
         /// Return the next [ReaddirEntry] for the directory stream. If the stream is finished, returns
         /// `Ok(None)`.
         pub(super) async fn next(&mut self, client: &impl ObjectClient) -> Result<Option<ReaddirEntry>, InodeError> {
-            if let Some(remote) = self.remote.next(client).await? {
-                self.local.remove(remote.name());
-                return Ok(Some(remote));
+
+            while self.heap.len() < 1024 {
+                let next = self.remote.next(client).await?;
+                match next {
+                    Some(next) => {
+                        self.heap.push(next);
+                    },
+                    None => {
+                        break;
+                    }
+                }
             }
 
+            if let Some( remote) = self.heap.pop() {
+                self.local.remove(remote.name());
+                // Collect all elements with the same name
+                let mut same_name_elements = vec![remote.clone()];
+                while let Some(x) = self.heap.peek() {
+                    if x.name() == remote.name() {
+                        same_name_elements.push(self.heap.pop().unwrap());
+                    } else {
+                        break;
+                    }
+                }
+
+                // The last element with the same name
+                if let Some(last_element) = same_name_elements.pop() {
+                    return Ok(Some(last_element));
+                }
+            }
             if !self.local.is_empty() {
                 self.local_iter.extend(self.local.drain().map(|(_, entry)| entry));
             }
