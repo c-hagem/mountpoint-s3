@@ -47,6 +47,8 @@ use std::collections::VecDeque;
 use mountpoint_s3_client::types::ObjectInfo;
 use mountpoint_s3_client::ObjectClient;
 use tracing::{error, trace, warn};
+use splay_tree::SplayHeap;
+
 
 use crate::sync::{Arc, AsyncMutex, Mutex};
 
@@ -519,7 +521,6 @@ mod ordered {
 mod unordered {
     use std::cmp::Reverse;
     use std::collections::{BinaryHeap, HashMap};
-    use log::debug;
     use super::*;
 
     /// An iterator over [ReaddirEntry]s for a directory, where the remote entries are not available
@@ -533,7 +534,7 @@ mod unordered {
         local: HashMap<String, ReaddirEntry>,
         /// Queue of local entries to be returned, prepared based on the contents of [Self::local].
         local_iter: VecDeque<ReaddirEntry>,
-        heap: BinaryHeap<ReaddirEntry>
+        heap: SplayHeap<ReaddirEntry>
     }
 
     impl ReaddirIter {
@@ -556,7 +557,7 @@ mod unordered {
                 remote: RemoteIter::new(bucket, full_path, page_size, false),
                 local: local_map,
                 local_iter: VecDeque::new(),
-                heap: BinaryHeap::new(),
+                heap: SplayHeap::new(),
             }
         }
 

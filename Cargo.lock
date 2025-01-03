@@ -2555,6 +2555,7 @@ dependencies = [
  "serial_test",
  "sha2",
  "shuttle",
+ "splay_tree",
  "supports-color 3.0.2",
  "sysinfo",
  "syslog",
@@ -3707,6 +3708,12 @@ dependencies = [
  "base64ct",
  "der",
 ]
+
+[[package]]
+name = "splay_tree"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f441f93854f4f1325b18362c76a3049fd7839a6f1227650f4057077ccc85357f"
 
 [[package]]
 name = "stable_deref_trait"
