@@ -167,6 +167,7 @@ pub struct Harness {
     client: Arc<MockClient>,
     bucket: String,
     inflight_writes: InflightWrites,
+    only_check_at_end: bool,
 }
 
 impl Harness {
@@ -177,6 +178,7 @@ impl Harness {
         reference: Reference,
         bucket: &str,
         readdir_limit: usize,
+        only_check_at_end: bool,
     ) -> Self {
         Self {
             readdir_limit,
@@ -185,6 +187,7 @@ impl Harness {
             client,
             bucket: bucket.to_owned(),
             inflight_writes: Default::default(),
+            only_check_at_end,
         }
     }
 
@@ -236,8 +239,13 @@ impl Harness {
                     self.perform_delete_object(*key_index).await;
                 }
             }
-
-            debug!(?op, "checking contents");
+            if !self.only_check_at_end {
+                debug!(?op, "checking contents");
+                self.compare_contents().await;
+            }
+        }
+        if self.only_check_at_end {
+            debug!("checking contents after executing all operations");
             self.compare_contents().await;
         }
     }
@@ -757,7 +765,7 @@ mod read_only {
 
         let reference = Reference::new(namespace);
 
-        let harness = Harness::new(fs, client, reference, BUCKET_NAME, readdir_limit);
+        let harness = Harness::new(fs, client, reference, BUCKET_NAME, readdir_limit, false);
 
         futures::executor::block_on(async move {
             match check {
@@ -885,6 +893,9 @@ mod mutations {
     use proptest::collection::vec;
 
     fn run_test(initial_tree: TreeNode, ops: Vec<Op>, readdir_limit: usize) {
+        run_test_full(initial_tree, ops, readdir_limit, false);
+    }
+    fn run_test_full(initial_tree: TreeNode, ops: Vec<Op>, readdir_limit: usize, only_check_end: bool) {
         const BUCKET_NAME: &str = "test-bucket";
 
         let test_prefix = Prefix::new("").expect("valid prefix");
@@ -909,7 +920,7 @@ mod mutations {
 
         let reference = Reference::new(namespace);
 
-        let mut harness = Harness::new(fs, client, reference, BUCKET_NAME, readdir_limit);
+        let mut harness = Harness::new(fs, client, reference, BUCKET_NAME, readdir_limit, only_check_end);
 
         futures::executor::block_on(harness.run(ops));
     }
@@ -922,7 +933,7 @@ mod mutations {
 
         #[test]
         fn reftest_random_tree(tree in gen_tree(5, 100, 5, 20), readdir_limit in 0..10usize, ops in vec(any::<Op>(), 1..10)) {
-            run_test(tree, ops, readdir_limit);
+            run_test_full(tree, ops, readdir_limit, false);
         }
     }
 
