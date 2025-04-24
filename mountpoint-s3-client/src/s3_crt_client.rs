@@ -564,6 +564,7 @@ impl S3CrtClientInner {
                 let request_type = request_type_to_metrics_string(metrics.request_type());
                 let request_id = metrics.request_id().unwrap_or_else(|| "<unknown>".into());
                 let duration = metrics.total_duration();
+                let sending_duration = metrics.sending_duration();
                 let ttfb = metrics.time_to_first_byte();
                 let range = metrics.response_headers().and_then(|headers| extract_range_header(&headers));
 
@@ -582,6 +583,7 @@ impl S3CrtClientInner {
                     metrics::histogram!("s3.requests.first_byte_latency_us", "op" => op, "type" => request_type).record(ttfb.as_micros() as f64);
                 }
                 metrics::histogram!("s3.requests.total_latency_us", "op" => op, "type" => request_type).record(duration.as_micros() as f64);
+                metrics::histogram!("s3.requests.s3_request_latency_us", "op" => op, "type" => request_type).record(sending_duration.as_micros() as f64);
                 metrics::counter!("s3.requests", "op" => op, "type" => request_type).increment(1);
                 if request_failure {
                     metrics::counter!("s3.requests.failures", "op" => op, "type" => request_type, "status" => http_status.unwrap_or(-1).to_string()).increment(1);

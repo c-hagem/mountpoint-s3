@@ -1135,6 +1135,14 @@ impl RequestMetrics {
         Duration::from_nanos(out)
     }
 
+    /// Return the sending duration for this request
+    pub fn sending_duration(&self) -> Duration {
+        let mut out: u64 = 0;
+        // SAFETY: `inner` is a valid aws_s3_request_metrics
+        unsafe { aws_s3_request_metrics_get_sending_duration_ns(self.inner.as_ptr(), &mut out) };
+        Duration::from_nanos(out)
+    }
+
     /// Get the time when the request started to be encoded in nanoseconds
     pub fn send_start_timestamp_ns(&self) -> Option<u64> {
         let mut out: u64 = 0;
