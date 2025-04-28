@@ -103,7 +103,6 @@ pub struct DirectoryEntry {
     pub attr: FileAttr,
     pub generation: u64,
     pub ttl: Duration,
-    lookup: LookedUp,
 }
 
 /// Reply to a 'statfs' call
@@ -269,7 +268,7 @@ where
         // We don't implement hard links, and don't want to have to list a directory to count its
         // hard links, so we just assume one link for files (itself) and two links for directories
         // (itself + the "." link).
-        let (perm, nlink) = match lookup.inode.kind() {
+        let (perm, nlink) = match lookup.kind() {
             InodeKind::File => {
                 if lookup.stat.is_readable {
                     (self.config.file_mode, 1)
@@ -281,14 +280,14 @@ where
         };
 
         FileAttr {
-            ino: lookup.inode.ino(),
+            ino: lookup.ino,
             size: lookup.stat.size as u64,
             blocks: (lookup.stat.size as u64).div_ceil(STAT_BLOCK_SIZE),
             atime: lookup.stat.atime.into(),
             mtime: lookup.stat.mtime.into(),
             ctime: lookup.stat.ctime.into(),
             crtime: UNIX_EPOCH,
-            kind: lookup.inode.kind().into(),
+            kind: lookup.kind().into(),
             perm,
             nlink,
             uid: self.config.uid,
@@ -391,35 +390,34 @@ where
         let force_revalidate = !self.config.cache_config.serve_lookup_from_cache || direct_io;
         let lookup = self.superblock.getattr(&self.client, ino, force_revalidate).await?;
 
-        match lookup.inode.kind() {
-            InodeKind::Directory => return Err(InodeError::IsDirectory(lookup.inode.err()).into()),
+        match lookup.kind() {
+            InodeKind::Directory => return Err(InodeError::IsDirectory(lookup.err()).into()),
             InodeKind::File => (),
         }
 
         let state = if flags.contains(OpenFlags::O_RDWR) {
-            if !lookup.inode.is_remote()?
+            if !lookup.is_remote
                 || (self.config.allow_overwrite && flags.contains(OpenFlags::O_TRUNC))
                 || (self.config.incremental_upload && flags.contains(OpenFlags::O_APPEND))
             {
                 // If the file is new or if it was opened in truncate or in append mode,
                 // we know it must be a write handle.
                 debug!("fs:open choosing write handle for O_RDWR");
-                FileHandleState::new_write_handle(&lookup, lookup.inode.ino(), flags, self).await?
+                FileHandleState::new_write_handle(&lookup, flags, self).await?
             } else {
                 // Otherwise, it must be a read handle.
                 debug!("fs:open choosing read handle for O_RDWR");
                 FileHandleState::new_read_handle(&lookup, self).await?
             }
         } else if flags.contains(OpenFlags::O_WRONLY) {
-            FileHandleState::new_write_handle(&lookup, lookup.inode.ino(), flags, self).await?
+            FileHandleState::new_write_handle(&lookup, flags, self).await?
         } else {
             FileHandleState::new_read_handle(&lookup, self).await?
         };
 
-        let full_key = self.superblock.full_key_for_inode(&lookup.inode);
         let handle = FileHandle {
             ino,
-            full_key,
+            full_key: lookup.full_key,
             open_pid: pid,
             state: AsyncMutex::new(state),
         };
@@ -498,7 +496,7 @@ where
             .superblock
             .create(&self.client, parent, name, InodeKind::File)
             .await?;
-        debug!(ino = lookup.inode.ino(), "new inode created");
+        debug!(ino = lookup.ino, "new inode created");
         let attr = self.make_attr(&lookup);
         Ok(Entry {
             ttl: lookup.validity(),
@@ -625,7 +623,7 @@ where
             *dir_handle.last_response.lock().await = None;
         }
 
-        let readdir_handle = dir_handle.handle.lock().await;
+        let mut readdir_handle = dir_handle.handle.lock().await;
 
         // If offset is 0 we've already restarted the request and do not use cache, otherwise we're using the same request
         // and it is safe to repeat the response. We do not repeat the response if negative offset was provided.
@@ -652,7 +650,7 @@ where
                         // must remember it again, except that readdirplus specifies that . and ..
                         // are never incremented.
                         if is_readdirplus && entry.name != "." && entry.name != ".." {
-                            readdir_handle.remember(&entry.lookup);
+                            self.superblock.remember(entry.ino);
                         }
                     }
                     return Ok(reply);
@@ -703,7 +701,6 @@ where
                 attr,
                 generation: 0,
                 ttl: lookup.validity(),
-                lookup,
             };
             if reply.add(entry) {
                 return Ok(reply.finish(offset, &dir_handle).await);
@@ -723,7 +720,6 @@ where
                 attr,
                 generation: 0,
                 ttl: lookup.validity(),
-                lookup,
             };
             if reply.add(entry) {
                 return Ok(reply.finish(offset, &dir_handle).await);
@@ -736,25 +732,24 @@ where
                 None => return Ok(reply.finish(offset, &dir_handle).await),
                 Some(next) => next,
             };
-            trace!(next_inode = ?next.inode, "new inode yielded by readdir handle");
+            trace!(?next, "new inode yielded by readdir handle");
 
-            let attr = self.make_attr(&next);
+            let attr = self.make_attr(next);
             let entry = DirectoryEntry {
                 ino: attr.ino,
                 offset: dir_handle.offset() + 1,
-                name: next.inode.name().into(),
+                name: next.name().into(),
                 attr,
                 generation: 0,
                 ttl: next.validity(),
-                lookup: next.clone(),
             };
 
             if reply.add(entry) {
-                readdir_handle.readd(next);
+                readdir_handle.rewind();
                 return Ok(reply.finish(offset, &dir_handle).await);
             }
             if is_readdirplus {
-                readdir_handle.remember(&next);
+                readdir_handle.remember_current();
             }
             dir_handle.next_offset();
         }

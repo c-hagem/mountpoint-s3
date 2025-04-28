@@ -105,11 +105,6 @@ impl Inode {
         *lookup_count
     }
 
-    pub fn is_remote(&self) -> Result<bool, InodeError> {
-        let state = self.get_inode_state()?;
-        Ok(state.write_status == WriteStatus::Remote)
-    }
-
     /// return Inode State with read lock after checking whether the directory inode is deleted or not.
     pub(super) fn get_inode_state(&self) -> Result<RwLockReadGuard<InodeState>, InodeError> {
         let inode_state = self.inner.sync.read().unwrap();
@@ -202,23 +197,32 @@ impl Inode {
 
     /// Produce a description of this Inode for use in errors
     pub fn err(&self) -> InodeErrorInfo {
-        InodeErrorInfo(self.clone())
+        InodeErrorInfo::new(self.ino(), self.valid_key().clone())
     }
 }
 
 /// A wrapper that prints useful customer-facing error messages for inodes by including the object
 /// key rather than just the inode number.
-pub struct InodeErrorInfo(Inode);
+pub struct InodeErrorInfo {
+    ino: InodeNo,
+    key: ValidKey,
+}
+
+impl InodeErrorInfo {
+    pub fn new(ino: InodeNo, key: ValidKey) -> Self {
+        Self { ino, key }
+    }
+}
 
 impl Display for InodeErrorInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} (key {:?})", self.0.ino(), self.0.key())
+        write!(f, "{} (key {:?})", self.ino, self.key)
     }
 }
 
 impl Debug for InodeErrorInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        write!(f, "{} (key {:?})", self.ino, self.key)
     }
 }
 
@@ -425,13 +429,13 @@ impl WriteMode {
 
 #[cfg(test)]
 mod tests {
-    use crate::superblock::Superblock;
     use mountpoint_s3_client::{
         mock_client::{MockClient, MockClientConfig, MockObject},
         types::ETag,
     };
     use time::Duration;
 
+    use super::super::Superblock;
     use super::*;
 
     #[tokio::test]
@@ -497,17 +501,19 @@ mod tests {
         let superblock = Superblock::new("test_bucket", &Default::default(), Default::default());
 
         let lookup = superblock.lookup(&client, ROOT_INODE_NO, name.as_ref()).await.unwrap();
-        let lookup_count = lookup.inode.inner.sync.read().unwrap().lookup_count;
+
+        let inode = superblock.inner.get(lookup.ino).unwrap();
+        let lookup_count = inode.inner.sync.read().unwrap().lookup_count;
         assert_eq!(lookup_count, 1);
-        let ino = lookup.inode.ino();
+        let ino = lookup.ino;
 
         superblock.forget(ino, 1);
 
-        let lookup_count = lookup.inode.inner.sync.read().unwrap().lookup_count;
+        let lookup_count = inode.inner.sync.read().unwrap().lookup_count;
         assert_eq!(lookup_count, 0);
         // This test should now hold the only reference to the inode, so we know it's unreferenced
         // and will be freed
-        assert_eq!(Arc::strong_count(&lookup.inode.inner), 1);
+        assert_eq!(Arc::strong_count(&inode.inner), 1);
         drop(lookup);
 
         let err = superblock
@@ -517,7 +523,8 @@ mod tests {
         assert!(matches!(err, InodeError::InodeDoesNotExist(_)));
 
         let lookup = superblock.lookup(&client, ROOT_INODE_NO, name.as_ref()).await.unwrap();
-        let lookup_count = lookup.inode.inner.sync.read().unwrap().lookup_count;
+        let inode = superblock.inner.get(lookup.ino).unwrap();
+        let lookup_count = inode.inner.sync.read().unwrap().lookup_count;
         assert_eq!(lookup_count, 1);
     }
 
@@ -536,22 +543,24 @@ mod tests {
         let superblock = Superblock::new("test_bucket", &Default::default(), Default::default());
 
         let lookup = superblock.lookup(&client, ROOT_INODE_NO, name.as_ref()).await.unwrap();
-        let lookup_count = lookup.inode.inner.sync.read().unwrap().lookup_count;
+
+        let inode = superblock.inner.get(lookup.ino).unwrap();
+        let lookup_count = inode.inner.sync.read().unwrap().lookup_count;
         assert_eq!(lookup_count, 1);
-        let ino = lookup.inode.ino();
+        let ino = lookup.ino;
         drop(lookup);
 
         client.add_object(&format!("{name}/bar"), b"bar".into());
 
         // Should be a directory now, so a different inode
         let new_lookup = superblock.lookup(&client, ROOT_INODE_NO, name.as_ref()).await.unwrap();
-        assert_ne!(ino, new_lookup.inode.ino());
+        assert_ne!(ino, new_lookup.ino);
 
         superblock.forget(ino, 1);
 
         // Lookup still works after forgetting the old inode
         let new_lookup2 = superblock.lookup(&client, ROOT_INODE_NO, name.as_ref()).await.unwrap();
-        assert_eq!(new_lookup.inode.ino(), new_lookup2.inode.ino());
+        assert_eq!(new_lookup.ino, new_lookup2.ino);
     }
 
     #[tokio::test]
@@ -693,9 +702,11 @@ mod tests {
                 let superblock = Arc::new(Superblock::new("test_bucket", &Default::default(), Default::default()));
 
                 let lookup = superblock.lookup(&client, ROOT_INODE_NO, name.as_ref()).await.unwrap();
-                let lookup_count = lookup.inode.inner.sync.read().unwrap().lookup_count;
+
+                let inode = superblock.inner.get(lookup.ino).unwrap();
+                let lookup_count = inode.inner.sync.read().unwrap().lookup_count;
                 assert_eq!(lookup_count, 1);
-                let ino = lookup.inode.ino();
+                let ino = lookup.ino;
 
                 let superblock_clone = superblock.clone();
                 let forget_task = thread::spawn(move || {
@@ -709,7 +720,7 @@ mod tests {
                     .unwrap();
 
                 forget_task.join().unwrap();
-                let lookup_count = lookup.inode.inner.sync.read().unwrap().lookup_count;
+                let lookup_count = inode.inner.sync.read().unwrap().lookup_count;
                 assert_eq!(lookup_count, 0);
             }
 

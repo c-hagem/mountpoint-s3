@@ -175,6 +175,12 @@ impl Superblock {
         }
     }
 
+    pub fn remember(&self, ino: InodeNo) {
+        if let Some(inode) = self.inner.inodes.read().unwrap().get(&ino).cloned() {
+            self.inner.remember(&inode);
+        }
+    }
+
     /// Lookup an inode in the parent directory with the given name and
     /// increments its lookup count.
     pub async fn lookup<OC: ObjectClient>(
@@ -184,7 +190,7 @@ impl Superblock {
         name: &OsStr,
     ) -> Result<LookedUp, InodeError> {
         trace!(parent=?parent_ino, ?name, "lookup");
-        let lookup = self
+        let LookedUpInode { inode, lookup } = self
             .inner
             .lookup_by_name(
                 client,
@@ -193,7 +199,7 @@ impl Superblock {
                 self.inner.config.cache_config.serve_lookup_from_cache,
             )
             .await?;
-        self.inner.remember(&lookup.inode);
+        self.inner.remember(&inode);
         Ok(lookup)
     }
 
@@ -211,20 +217,24 @@ impl Superblock {
             let sync = inode.get_inode_state()?;
             if sync.stat.is_valid() {
                 let stat = sync.stat.clone();
+                let is_remote = sync.write_status == WriteStatus::Remote;
                 drop(sync);
-                return Ok(LookedUp { inode, stat });
+                return Ok(self.inner.new_lookedup(&inode, stat, is_remote));
             }
         }
 
-        let lookup = self
+        let LookedUpInode {
+            inode: new_inode,
+            lookup,
+        } = self
             .inner
             .lookup_by_name(client, inode.parent(), inode.name().as_ref(), false)
             .await?;
-        if lookup.inode.ino() != ino {
+        if new_inode.ino() != ino {
             Err(InodeError::StaleInode {
-                remote_key: self.full_key_for_inode(&lookup.inode).into(),
+                remote_key: lookup.full_key.into(),
                 old_inode: inode.err(),
-                new_inode: lookup.inode.err(),
+                new_inode: new_inode.err(),
             })
         } else {
             Ok(lookup)
@@ -263,8 +273,9 @@ impl Superblock {
         };
 
         let stat = sync.stat.clone();
+        let is_remote = sync.write_status == WriteStatus::Remote;
         drop(sync);
-        Ok(LookedUp { inode, stat })
+        Ok(self.inner.new_lookedup(&inode, stat, is_remote))
     }
 
     /// Prepare an inode to start writing.
@@ -443,7 +454,7 @@ impl Superblock {
         let name: ValidName = name.try_into()?;
 
         // Put inode creation in a block so we don't hold the lock on the parent state longer than needed.
-        let lookup = {
+        let LookedUpInode { inode, lookup } = {
             let parent_inode = self.inner.get(dir)?;
             let mut parent_state = parent_inode.get_mut_inode_state()?;
 
@@ -473,13 +484,11 @@ impl Superblock {
             };
 
             let state = InodeState::new(&stat, kind, WriteStatus::LocalUnopened);
-            let inode = self
-                .inner
-                .create_inode_locked(&parent_inode, &mut parent_state, name, kind, state, true)?;
-            LookedUp { inode, stat }
+            self.inner
+                .create_inode_locked(&parent_inode, &mut parent_state, name, kind, state, true)?
         };
 
-        self.inner.remember(&lookup.inode);
+        self.inner.remember(&inode);
         Ok(lookup)
     }
 
@@ -491,7 +500,7 @@ impl Superblock {
         parent_ino: InodeNo,
         name: &OsStr,
     ) -> Result<(), InodeError> {
-        let LookedUp { inode, .. } = self
+        let LookedUpInode { inode, .. } = self
             .inner
             .lookup_by_name(
                 client,
@@ -565,7 +574,7 @@ impl Superblock {
         name: &OsStr,
     ) -> Result<(), InodeError> {
         let parent = self.inner.get(parent_ino)?;
-        let LookedUp { inode, .. } = self
+        let LookedUpInode { inode, .. } = self
             .inner
             .lookup_by_name(
                 client,
@@ -687,7 +696,7 @@ impl SuperblockInner {
         parent_ino: InodeNo,
         name: &OsStr,
         allow_cache: bool,
-    ) -> Result<LookedUp, InodeError> {
+    ) -> Result<LookedUpInode, InodeError> {
         let name: ValidName = name.try_into()?;
 
         let lookup = if allow_cache {
@@ -719,21 +728,22 @@ impl SuperblockInner {
     /// verifying any returned entry has not expired.
     /// If no record for the given `name` is found, returns [None].
     /// If an entry is found in the negative cache, returns [Some(Err(InodeError::FileDoesNotExist))].
-    fn cache_lookup(&self, parent_ino: InodeNo, name: &str) -> Option<Result<LookedUp, InodeError>> {
+    fn cache_lookup(&self, parent_ino: InodeNo, name: &str) -> Option<Result<LookedUpInode, InodeError>> {
         fn do_cache_lookup(
             superblock: &SuperblockInner,
             parent: Inode,
             name: &str,
-        ) -> Option<Result<LookedUp, InodeError>> {
+        ) -> Option<Result<LookedUpInode, InodeError>> {
             match &parent.get_inode_state().ok()?.kind_data {
                 InodeKindData::File { .. } => unreachable!("parent should be a directory!"),
                 InodeKindData::Directory { children, .. } => {
                     if let Some(inode) = children.get(name) {
-                        let inode_stat = &inode.get_inode_state().ok()?.stat;
-                        if inode_stat.is_valid() {
-                            let lookup = LookedUp {
+                        let inode_state = inode.get_inode_state().ok()?;
+                        if inode_state.stat.is_valid() {
+                            let is_remote = inode_state.write_status == WriteStatus::Remote;
+                            let lookup = LookedUpInode {
                                 inode: inode.clone(),
-                                stat: inode_stat.clone(),
+                                lookup: superblock.new_lookedup(inode, inode_state.stat.clone(), is_remote),
                             };
                             return Some(Ok(lookup));
                         }
@@ -935,7 +945,7 @@ impl SuperblockInner {
         parent_ino: InodeNo,
         name: ValidName,
         remote: Option<RemoteLookup>,
-    ) -> Result<LookedUp, InodeError> {
+    ) -> Result<LookedUpInode, InodeError> {
         let parent = self.get(parent_ino)?;
 
         // Should be impossible since all callers check this already, but let's be safe
@@ -953,7 +963,7 @@ impl SuperblockInner {
         }
 
         // Fast path: try with only a read lock on the directory first.
-        if let Some(looked_up) = Self::try_update_fast_path(&parent, &name, &remote)? {
+        if let Some(looked_up) = self.try_update_fast_path(&parent, &name, &remote)? {
             return Ok(looked_up);
         }
 
@@ -963,10 +973,11 @@ impl SuperblockInner {
     /// Try to update the inode for the given name in the parent directory with only a read lock on
     /// the parent.
     fn try_update_fast_path(
+        &self,
         parent: &Inode,
         name: &str,
         remote: &Option<RemoteLookup>,
-    ) -> Result<Option<LookedUp>, InodeError> {
+    ) -> Result<Option<LookedUpInode>, InodeError> {
         let parent_state = parent.get_inode_state()?;
         let inode = match &parent_state.kind_data {
             InodeKindData::File { .. } => unreachable!("we know parent is a directory"),
@@ -983,9 +994,9 @@ impl SuperblockInner {
                 {
                     trace!(parent=?existing_inode.parent(), name=?existing_inode.name(), ino=?existing_inode.ino(), "updating inode in place");
                     existing_state.stat = remote.stat.clone();
-                    Ok(Some(LookedUp {
+                    Ok(Some(LookedUpInode {
                         inode: existing_inode.clone(),
-                        stat: remote.stat.clone(),
+                        lookup: self.new_lookedup(existing_inode, remote.stat.clone(), existing_is_remote),
                     }))
                 } else {
                     Ok(None)
@@ -1003,7 +1014,7 @@ impl SuperblockInner {
         parent: Inode,
         name: ValidName,
         remote: Option<RemoteLookup>,
-    ) -> Result<LookedUp, InodeError> {
+    ) -> Result<LookedUpInode, InodeError> {
         let mut parent_state = parent.get_mut_inode_state()?;
         let inode = match &parent_state.kind_data {
             InodeKindData::File { .. } => unreachable!("we know parent is a directory"),
@@ -1031,9 +1042,10 @@ impl SuperblockInner {
                     let stat = sync.stat.clone();
                     drop(sync);
 
-                    Ok(LookedUp {
+                    let lookup = self.new_lookedup(&existing_inode, stat, false);
+                    Ok(LookedUpInode {
                         inode: existing_inode,
-                        stat,
+                        lookup,
                     })
                 } else {
                     // This existing inode is local-only (because `remote` is None), but is not
@@ -1046,10 +1058,6 @@ impl SuperblockInner {
             (Some(remote), None) => {
                 let state = InodeState::new(&remote.stat, remote.kind, WriteStatus::Remote);
                 self.create_inode_locked(&parent, &mut parent_state, name, remote.kind, state, false)
-                    .map(|inode| LookedUp {
-                        inode,
-                        stat: remote.stat,
-                    })
             }
             (Some(remote), Some(existing_inode)) => {
                 // We need to reconcile the existing state with the state we just got from the
@@ -1062,9 +1070,9 @@ impl SuperblockInner {
                 // Remote files are always shadowed by existing local files/directories, so do
                 // nothing and return the existing inode.
                 if remote.kind == InodeKind::File && !existing_is_remote {
-                    return Ok(LookedUp {
+                    return Ok(LookedUpInode {
                         inode: existing_inode.clone(),
-                        stat: existing_state.stat.clone(),
+                        lookup: self.new_lookedup(&existing_inode, existing_state.stat.clone(), false),
                     });
                 }
 
@@ -1084,9 +1092,9 @@ impl SuperblockInner {
                         };
                         writing_children.remove(&existing_inode.ino());
                     }
-                    return Ok(LookedUp {
+                    return Ok(LookedUpInode {
                         inode: existing_inode.clone(),
-                        stat: remote.stat,
+                        lookup: self.new_lookedup(&existing_inode, existing_state.stat.clone(), true),
                     });
                 }
 
@@ -1109,12 +1117,7 @@ impl SuperblockInner {
                     "inode needs to be recreated",
                 );
                 let state = InodeState::new(&remote.stat, remote.kind, WriteStatus::Remote);
-                let new_inode =
-                    self.create_inode_locked(&parent, &mut parent_state, name, remote.kind, state, false)?;
-                Ok(LookedUp {
-                    inode: new_inode,
-                    stat: remote.stat,
-                })
+                self.create_inode_locked(&parent, &mut parent_state, name, remote.kind, state, false)
             }
         }
     }
@@ -1131,12 +1134,14 @@ impl SuperblockInner {
         kind: InodeKind,
         state: InodeState,
         is_new_file: bool,
-    ) -> Result<Inode, InodeError> {
+    ) -> Result<LookedUpInode, InodeError> {
         let key = parent
             .valid_key()
             .new_child(name, kind)
             .map_err(|_| InodeError::NotADirectory(parent.err()))?;
         let next_ino = self.next_ino.fetch_add(1, Ordering::SeqCst);
+        let is_remote = state.write_status == WriteStatus::Remote;
+        let stat = state.stat.clone();
         let inode = Inode::new(next_ino, parent.ino(), key, &self.prefix, state);
         trace!(parent=?inode.parent(), name=?inode.name(), kind=?inode.kind(), new_ino=?inode.ino(), key=?inode.key(), "created new inode");
 
@@ -1160,7 +1165,18 @@ impl SuperblockInner {
             }
         }
 
-        Ok(inode)
+        let lookup = self.new_lookedup(&inode, stat, is_remote);
+        Ok(LookedUpInode { inode, lookup })
+    }
+
+    fn new_lookedup(&self, inode: &Inode, stat: InodeStat, is_remote: bool) -> LookedUp {
+        let full_key = self.full_key_for_inode(inode);
+        LookedUp {
+            ino: inode.ino(),
+            full_key,
+            stat,
+            is_remote,
+        }
     }
 }
 
@@ -1176,15 +1192,35 @@ pub struct RemoteLookup {
 /// until `stat.expiry`.
 #[derive(Debug, Clone)]
 pub struct LookedUp {
-    pub inode: Inode,
+    pub ino: InodeNo,
+    pub full_key: ValidKey,
     pub stat: InodeStat,
+    pub is_remote: bool,
 }
 
 impl LookedUp {
+    pub fn kind(&self) -> InodeKind {
+        self.full_key.kind()
+    }
+
+    pub fn name(&self) -> &str {
+        self.full_key.name()
+    }
+
     /// How much longer this lookup will be valid for
     pub fn validity(&self) -> Duration {
         self.stat.expiry.remaining_ttl()
     }
+
+    pub fn err(&self) -> InodeErrorInfo {
+        InodeErrorInfo::new(self.ino, self.full_key.clone())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LookedUpInode {
+    pub inode: Inode,
+    pub lookup: LookedUp,
 }
 
 /// A wrapper around a `HashMap<InodeNo, Inode>`` that just takes care of metrics when inodes are
@@ -1318,7 +1354,7 @@ mod tests {
     /// Check an Inode's stat matches a series of fields.
     macro_rules! assert_inode_stat {
         ($lookup:expr, $kind:expr, $datetime:expr, $size:expr) => {
-            assert_eq!($lookup.inode.kind(), $kind);
+            assert_eq!($lookup.kind(), $kind);
             assert!($lookup.stat.atime >= $datetime && $lookup.stat.atime < $datetime + Duration::seconds(5));
             assert!($lookup.stat.ctime >= $datetime && $lookup.stat.ctime < $datetime + Duration::seconds(5));
             assert!($lookup.stat.mtime >= $datetime && $lookup.stat.mtime < $datetime + Duration::seconds(5));
@@ -1372,66 +1408,48 @@ mod tests {
                 .await
                 .expect("should exist");
             assert_inode_stat!(dir0, InodeKind::Directory, ts, 0);
-            assert_eq!(
-                superblock.full_key_for_inode(&dir0.inode).to_string(),
-                format!("{prefix}dir0/")
-            );
+            assert_eq!(dir0.full_key.to_string(), format!("{prefix}dir0/"));
 
             let dir1 = superblock
                 .lookup(&client, FUSE_ROOT_INODE, &OsString::from("dir1"))
                 .await
                 .expect("should exist");
             assert_inode_stat!(dir1, InodeKind::Directory, ts, 0);
-            assert_eq!(
-                superblock.full_key_for_inode(&dir1.inode).to_string(),
-                format!("{prefix}dir1/")
-            );
+            assert_eq!(dir1.full_key.to_string(), format!("{prefix}dir1/"));
 
             let sdir0 = superblock
-                .lookup(&client, dir0.inode.ino(), &OsString::from("sdir0"))
+                .lookup(&client, dir0.ino, &OsString::from("sdir0"))
                 .await
                 .expect("should exist");
             assert_inode_stat!(sdir0, InodeKind::Directory, ts, 0);
-            assert_eq!(
-                superblock.full_key_for_inode(&sdir0.inode).to_string(),
-                format!("{prefix}dir0/sdir0/")
-            );
+            assert_eq!(sdir0.full_key.to_string(), format!("{prefix}dir0/sdir0/"));
 
             let sdir1 = superblock
-                .lookup(&client, dir0.inode.ino(), &OsString::from("sdir1"))
+                .lookup(&client, dir0.ino, &OsString::from("sdir1"))
                 .await
                 .expect("should exist");
             assert_inode_stat!(sdir1, InodeKind::Directory, ts, 0);
-            assert_eq!(
-                superblock.full_key_for_inode(&sdir1.inode).to_string(),
-                format!("{prefix}dir0/sdir1/")
-            );
+            assert_eq!(sdir1.full_key.to_string(), format!("{prefix}dir0/sdir1/"));
 
             let sdir2 = superblock
-                .lookup(&client, dir1.inode.ino(), &OsString::from("sdir2"))
+                .lookup(&client, dir1.ino, &OsString::from("sdir2"))
                 .await
                 .expect("should exist");
             assert_inode_stat!(sdir2, InodeKind::Directory, ts, 0);
-            assert_eq!(
-                superblock.full_key_for_inode(&sdir2.inode).to_string(),
-                format!("{prefix}dir1/sdir2/")
-            );
+            assert_eq!(sdir2.full_key.to_string(), format!("{prefix}dir1/sdir2/"));
 
             let sdir3 = superblock
-                .lookup(&client, dir1.inode.ino(), &OsString::from("sdir3"))
+                .lookup(&client, dir1.ino, &OsString::from("sdir3"))
                 .await
                 .expect("should exist");
             assert_inode_stat!(sdir3, InodeKind::Directory, ts, 0);
-            assert_eq!(
-                superblock.full_key_for_inode(&sdir3.inode).to_string(),
-                format!("{prefix}dir1/sdir3/")
-            );
+            assert_eq!(sdir3.full_key.to_string(), format!("{prefix}dir1/sdir3/"));
 
             for (dir, sdir, ino, n) in &[
-                (0, 0, sdir0.inode.ino(), 3),
-                (0, 1, sdir1.inode.ino(), 2),
-                (1, 2, sdir2.inode.ino(), 3),
-                (1, 3, sdir3.inode.ino(), 2),
+                (0, 0, sdir0.ino, 3),
+                (0, 1, sdir1.ino, 2),
+                (1, 2, sdir2.ino, 3),
+                (1, 3, sdir3.ino, 2),
             ] {
                 for i in 0..*n {
                     let file = superblock
@@ -1439,14 +1457,16 @@ mod tests {
                         .await
                         .expect("inode should exist");
                     // Grab last modified time according to mock S3
-                    let full_key = superblock.full_key_for_inode(&file.inode);
                     let modified_time = client
-                        .head_object(bucket, &full_key, &HeadObjectParams::new())
+                        .head_object(bucket, &file.full_key, &HeadObjectParams::new())
                         .await
                         .expect("object should exist")
                         .last_modified;
                     assert_inode_stat!(file, InodeKind::File, modified_time, object_size);
-                    assert_eq!(full_key.to_string(), format!("{prefix}dir{dir}/sdir{sdir}/file{i}.txt"));
+                    assert_eq!(
+                        file.full_key.to_string(),
+                        format!("{prefix}dir{dir}/sdir{sdir}/file{i}.txt")
+                    );
                 }
             }
         }
@@ -1619,20 +1639,19 @@ mod tests {
         // Try it all twice to test inode reuse
         for _ in 0..2 {
             let dir_handle = superblock.readdir(&client, FUSE_ROOT_INODE, 2).await.unwrap();
-            let entries = dir_handle.collect(&client).await.unwrap();
+            let entries = dir_handle.collect_and_remember(&client).await.unwrap();
             assert_eq!(
-                entries.iter().map(|entry| entry.inode.name()).collect::<Vec<_>>(),
+                entries.iter().map(|entry| entry.name()).collect::<Vec<_>>(),
                 &["dir0", "dir1"]
             );
             assert_inode_stat!(entries[0], InodeKind::Directory, ts, 0);
             assert_inode_stat!(entries[1], InodeKind::Directory, ts, 0);
 
-            dir_handle.remember(&entries[0]);
-            let dir0_inode = entries[0].inode.ino();
+            let dir0_inode = entries[0].ino;
             let dir_handle = superblock.readdir(&client, dir0_inode, 2).await.unwrap();
-            let entries = dir_handle.collect(&client).await.unwrap();
+            let entries = dir_handle.collect_and_remember(&client).await.unwrap();
             assert_eq!(
-                entries.iter().map(|entry| entry.inode.name()).collect::<Vec<_>>(),
+                entries.iter().map(|entry| entry.name()).collect::<Vec<_>>(),
                 &["file0.txt", "sdir0", "sdir1"]
             );
 
@@ -1640,12 +1659,11 @@ mod tests {
             assert_inode_stat!(entries[1], InodeKind::Directory, ts, 0);
             assert_inode_stat!(entries[2], InodeKind::Directory, ts, 0);
 
-            dir_handle.remember(&entries[1]);
-            let sdir0_inode = entries[1].inode.ino();
+            let sdir0_inode = entries[1].ino;
             let dir_handle = superblock.readdir(&client, sdir0_inode, 2).await.unwrap();
-            let entries = dir_handle.collect(&client).await.unwrap();
+            let entries = dir_handle.collect_and_remember(&client).await.unwrap();
             assert_eq!(
-                entries.iter().map(|entry| entry.inode.name()).collect::<Vec<_>>(),
+                entries.iter().map(|entry| entry.name()).collect::<Vec<_>>(),
                 &["file0.txt", "file1.txt", "file2.txt"]
             );
             for entry in entries {
@@ -1678,7 +1696,7 @@ mod tests {
                 .await
                 .unwrap();
             superblock
-                .start_writing(new_inode.inode.ino(), &WriteMode::default(), false)
+                .start_writing(new_inode.ino, &WriteMode::default(), false)
                 .await
                 .expect("should be able to start writing");
             expected_list.push(filename);
@@ -1687,9 +1705,9 @@ mod tests {
         // Try it all twice to test inode reuse
         for _ in 0..2 {
             let dir_handle = superblock.readdir(&client, FUSE_ROOT_INODE, 2).await.unwrap();
-            let entries = dir_handle.collect(&client).await.unwrap();
+            let entries = dir_handle.collect_and_remember(&client).await.unwrap();
             assert_eq!(
-                entries.iter().map(|entry| entry.inode.name()).collect::<Vec<_>>(),
+                entries.iter().map(|entry| entry.name()).collect::<Vec<_>>(),
                 expected_list
             );
         }
@@ -1730,7 +1748,7 @@ mod tests {
                 .await
                 .unwrap();
             superblock
-                .start_writing(new_inode.inode.ino(), &WriteMode::default(), false)
+                .start_writing(new_inode.ino, &WriteMode::default(), false)
                 .await
                 .expect("should be able to start writing");
             expected_list.push(filename);
@@ -1739,9 +1757,9 @@ mod tests {
         // Try it all twice to test inode reuse
         for _ in 0..2 {
             let dir_handle = superblock.readdir(&client, FUSE_ROOT_INODE, 2).await.unwrap();
-            let entries = dir_handle.collect(&client).await.unwrap();
+            let entries = dir_handle.collect_and_remember(&client).await.unwrap();
             assert_eq!(
-                entries.iter().map(|entry| entry.inode.name()).collect::<Vec<_>>(),
+                entries.iter().map(|entry| entry.name()).collect::<Vec<_>>(),
                 expected_list
             );
         }
@@ -1771,19 +1789,12 @@ mod tests {
             .lookup(&client, FUSE_ROOT_INODE, dirname.as_ref())
             .await
             .expect("lookup should succeed on local dirs");
-        assert_eq!(
-            lookedup
-                .inode
-                .get_inode_state()
-                .expect("should get Inode state with read lock")
-                .write_status,
-            WriteStatus::LocalUnopened
-        );
+        assert!(!lookedup.is_remote);
 
         let dir_handle = superblock.readdir(&client, FUSE_ROOT_INODE, 2).await.unwrap();
-        let entries = dir_handle.collect(&client).await.unwrap();
+        let entries = dir_handle.collect_and_remember(&client).await.unwrap();
         assert_eq!(
-            entries.iter().map(|entry| entry.inode.name()).collect::<Vec<_>>(),
+            entries.iter().map(|entry| entry.name()).collect::<Vec<_>>(),
             vec![dirname]
         );
 
@@ -1807,7 +1818,7 @@ mod tests {
 
         // Create local directory
         let dirname = "local_dir";
-        let LookedUp { inode, .. } = superblock
+        let lookup = superblock
             .create(&client, FUSE_ROOT_INODE, dirname.as_ref(), InodeKind::Directory)
             .await
             .expect("Should be able to create directory");
@@ -1823,12 +1834,12 @@ mod tests {
             .expect_err("should not do lookup on removed directory");
 
         superblock
-            .readdir(&client, inode.ino(), 2)
+            .readdir(&client, lookup.ino, 2)
             .await
             .expect_err("should not do readdir on removed directory");
 
         superblock
-            .getattr(&client, inode.ino(), false)
+            .getattr(&client, lookup.ino, false)
             .await
             .expect_err("should not do getattr on removed directory");
     }
@@ -1884,7 +1895,7 @@ mod tests {
                 .await
                 .unwrap();
             superblock
-                .start_writing(new_inode.inode.ino(), &WriteMode::default(), false)
+                .start_writing(new_inode.ino, &WriteMode::default(), false)
                 .await
                 .expect("should be able to start writing");
         }
@@ -1923,8 +1934,8 @@ mod tests {
 
         // And now walk the root directory to check it contains the right stuff
         let dir_handle = superblock.readdir(&client, FUSE_ROOT_INODE, 20).await.unwrap();
-        let entries = dir_handle.collect(&client).await.unwrap();
-        let entries: Vec<_> = entries.iter().map(|l| (l.inode.name(), l.inode.kind())).collect();
+        let entries = dir_handle.collect_and_remember(&client).await.unwrap();
+        let entries: Vec<_> = entries.iter().map(|l| (l.name(), l.kind())).collect();
 
         let expected_entries = [
             ("aaa", InodeKind::File),
@@ -1966,10 +1977,13 @@ mod tests {
 
         // Create local directory
         let dirname = "local_dir";
-        let LookedUp { inode, .. } = superblock
+        let lookup = superblock
             .create(&client, FUSE_ROOT_INODE, dirname.as_ref(), InodeKind::Directory)
             .await
             .expect("Should be able to create directory");
+
+        // Get the inode
+        let inode = superblock.inner.get(lookup.ino).unwrap();
 
         superblock
             .rmdir(&client, FUSE_ROOT_INODE, dirname.as_ref())
@@ -1987,8 +2001,8 @@ mod tests {
                 writing_children,
                 ..
             } => {
-                assert!(writing_children.get(&inode.ino()).is_none());
-                assert!(children.get(inode.name()).is_none());
+                assert!(writing_children.get(&lookup.ino).is_none());
+                assert!(children.get(lookup.name()).is_none());
             }
         }
 
@@ -2030,9 +2044,9 @@ mod tests {
 
         // removed directory should not appear in readdir of parent
         let dir_handle = superblock.readdir(&client, FUSE_ROOT_INODE, 2).await.unwrap();
-        let entries = dir_handle.collect(&client).await.unwrap();
+        let entries = dir_handle.collect_and_remember(&client).await.unwrap();
         assert_eq!(
-            entries.iter().map(|entry| entry.inode.name()).collect::<Vec<_>>(),
+            entries.iter().map(|entry| entry.name()).collect::<Vec<_>>(),
             &[dirname_to_stay]
         );
     }
@@ -2092,16 +2106,8 @@ mod tests {
                     .await
                     .unwrap();
 
-                assert_eq!(
-                    dir_lookedup
-                        .inode
-                        .get_inode_state()
-                        .expect("should get inode state with read lock")
-                        .write_status,
-                    WriteStatus::LocalUnopened
-                );
-
-                parent_dir_ino = dir_lookedup.inode.ino();
+                assert!(!dir_lookedup.is_remote);
+                parent_dir_ino = dir_lookedup.ino;
             }
             parent_dir_ino
         };
@@ -2114,13 +2120,13 @@ mod tests {
             .unwrap();
 
         superblock
-            .start_writing(new_inode.inode.ino(), &WriteMode::default(), false)
+            .start_writing(new_inode.ino, &WriteMode::default(), false)
             .await
             .expect("should be able to start writing");
 
         // Invoke [finish_writing], without actually adding the
         // object to the client
-        superblock.finish_writing(new_inode.inode.ino(), None).unwrap();
+        superblock.finish_writing(new_inode.ino, None).unwrap();
 
         // All nested dirs disappear
         let dirname = nested_dirs.first().unwrap();
@@ -2149,17 +2155,17 @@ mod tests {
                 .lookup(&client, FUSE_ROOT_INODE, "dir1".as_ref())
                 .await
                 .unwrap();
-            assert_eq!(dir1_1.inode.ino(), dir1_2.inode.ino());
+            assert_eq!(dir1_1.ino, dir1_2.ino);
 
             let file1_1 = superblock
-                .lookup(&client, dir1_1.inode.ino(), "file1.txt".as_ref())
+                .lookup(&client, dir1_1.ino, "file1.txt".as_ref())
                 .await
                 .unwrap();
             let file1_2 = superblock
-                .lookup(&client, dir1_1.inode.ino(), "file1.txt".as_ref())
+                .lookup(&client, dir1_1.ino, "file1.txt".as_ref())
                 .await
                 .unwrap();
-            assert_eq!(file1_1.inode.ino(), file1_2.inode.ino());
+            assert_eq!(file1_1.ino, file1_2.ino);
         }
     }
 
@@ -2190,9 +2196,9 @@ mod tests {
         let superblock = Superblock::new("test_bucket", &Default::default(), Default::default());
 
         let dir_handle = superblock.readdir(&client, FUSE_ROOT_INODE, 2).await.unwrap();
-        let entries = dir_handle.collect(&client).await.unwrap();
+        let entries = dir_handle.collect_and_remember(&client).await.unwrap();
         assert_eq!(
-            entries.iter().map(|entry| entry.inode.name()).collect::<Vec<_>>(),
+            entries.iter().map(|entry| entry.name()).collect::<Vec<_>>(),
             &["dir", "dir-1"]
         );
 
@@ -2200,7 +2206,7 @@ mod tests {
             .lookup(&client, FUSE_ROOT_INODE, "dir".as_ref())
             .await
             .unwrap();
-        assert_eq!(superblock.full_key_for_inode(&dir.inode).as_ref(), "dir/");
+        assert_eq!(dir.full_key.as_ref(), "dir/");
     }
 
     #[tokio::test]
@@ -2237,20 +2243,13 @@ mod tests {
 
         let superblock = Superblock::new("test_bucket", &Default::default(), Default::default());
         let dir_handle = superblock.readdir(&client, FUSE_ROOT_INODE, 2).await.unwrap();
-        let entries = dir_handle.collect(&client).await.unwrap();
-        assert_eq!(
-            entries.iter().map(|entry| entry.inode.name()).collect::<Vec<_>>(),
-            &["dir1"]
-        );
+        let entries = dir_handle.collect_and_remember(&client).await.unwrap();
+        assert_eq!(entries.iter().map(|entry| entry.name()).collect::<Vec<_>>(), &["dir1"]);
 
-        dir_handle.remember(&entries[0]);
-        let dir1_ino = entries[0].inode.ino();
+        let dir1_ino = entries[0].ino;
         let dir_handle = superblock.readdir(&client, dir1_ino, 2).await.unwrap();
-        let entries = dir_handle.collect(&client).await.unwrap();
-        assert_eq!(
-            entries.iter().map(|entry| entry.inode.name()).collect::<Vec<_>>(),
-            &["a"]
-        );
+        let entries = dir_handle.collect_and_remember(&client).await.unwrap();
+        assert_eq!(entries.iter().map(|entry| entry.name()).collect::<Vec<_>>(), &["a"]);
 
         // Neither of these keys should exist in the directory
         for key in ["/", "."] {
@@ -2280,7 +2279,7 @@ mod tests {
             .unwrap();
 
         superblock
-            .start_writing(new_inode.inode.ino(), &WriteMode::default(), false)
+            .start_writing(new_inode.ino, &WriteMode::default(), false)
             .await
             .expect("should be able to start writing");
 
@@ -2289,7 +2288,7 @@ mod tests {
 
         // Call setattr and verify the stat
         let lookup = superblock
-            .setattr(&client, new_inode.inode.ino(), Some(atime), Some(mtime))
+            .setattr(&client, new_inode.ino, Some(atime), Some(mtime))
             .await
             .expect("setattr should be successful");
         let stat = lookup.stat;
@@ -2297,7 +2296,7 @@ mod tests {
         assert_eq!(stat.mtime, mtime);
 
         let lookup = superblock
-            .getattr(&client, new_inode.inode.ino(), false)
+            .getattr(&client, new_inode.ino, false)
             .await
             .expect("getattr should be successful");
         let stat = lookup.stat;
@@ -2306,12 +2305,12 @@ mod tests {
 
         // Invoke [finish_writing] to make the file remote
         superblock
-            .finish_writing(new_inode.inode.ino(), Some(ETag::for_tests()))
+            .finish_writing(new_inode.ino, Some(ETag::for_tests()))
             .unwrap();
 
         // Should get an error back when calling setattr
         let result = superblock
-            .setattr(&client, new_inode.inode.ino(), Some(atime), Some(mtime))
+            .setattr(&client, new_inode.ino, Some(atime), Some(mtime))
             .await;
         assert!(matches!(result, Err(InodeError::SetAttrNotPermittedOnRemoteInode(_))));
     }

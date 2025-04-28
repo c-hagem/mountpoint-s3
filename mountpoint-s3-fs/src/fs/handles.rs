@@ -83,15 +83,16 @@ where
 {
     pub async fn new_write_handle(
         lookup: &LookedUp,
-        ino: InodeNo,
         flags: OpenFlags,
         fs: &S3Filesystem<Client>,
     ) -> Result<FileHandleState<Client>, Error> {
         let is_truncate = flags.contains(OpenFlags::O_TRUNC);
         let write_mode = fs.config.write_mode();
-        fs.superblock.start_writing(ino, &write_mode, is_truncate).await?;
+        fs.superblock
+            .start_writing(lookup.ino, &write_mode, is_truncate)
+            .await?;
         let bucket = fs.bucket.clone();
-        let key = fs.superblock.full_key_for_inode(&lookup.inode);
+        let key = lookup.full_key.clone();
         let handle = if write_mode.incremental_upload {
             let initial_etag = if is_truncate {
                 None
@@ -128,14 +129,13 @@ where
                 "objects in flexible retrieval storage classes are not accessible",
             ));
         }
-        fs.superblock.start_reading(lookup.inode.ino()).await?;
-        let full_key = fs.superblock.full_key_for_inode(&lookup.inode);
+        fs.superblock.start_reading(lookup.ino).await?;
         let object_size = lookup.stat.size as u64;
         let etag = match &lookup.stat.etag {
-            None => return Err(err!(libc::EBADF, "no E-Tag for inode {}", lookup.inode.ino())),
+            None => return Err(err!(libc::EBADF, "no E-Tag for inode {}", lookup.ino)),
             Some(etag) => ETag::from_str(etag).expect("E-Tag should be set"),
         };
-        let object_id = ObjectId::new(full_key.into(), etag);
+        let object_id = ObjectId::new(lookup.full_key.to_string(), etag);
         let request = fs.prefetcher.prefetch(fs.bucket.clone(), object_id, object_size);
         let handle = FileHandleState::Read(request);
         metrics::gauge!("fs.current_handles", "type" => "read").increment(1.0);
@@ -234,7 +234,7 @@ where
                         let initial_etag = etag.or(initial_etag);
                         let request = fs.uploader.start_incremental_upload(
                             fs.bucket.clone(),
-                            handle.full_key.to_owned(),
+                            handle.full_key.to_string(),
                             current_offset,
                             initial_etag.clone(),
                         );

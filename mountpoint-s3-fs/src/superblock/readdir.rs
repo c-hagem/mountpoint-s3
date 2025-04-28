@@ -51,9 +51,11 @@ use mountpoint_s3_client::ObjectClient;
 use time::OffsetDateTime;
 use tracing::{error, trace, warn};
 
-use crate::sync::{Arc, AsyncMutex, Mutex};
+use crate::sync::Arc;
 
-use super::{InodeError, InodeKind, InodeKindData, InodeNo, InodeStat, LookedUp, RemoteLookup, SuperblockInner};
+use super::{
+    InodeError, InodeKind, InodeKindData, InodeNo, InodeStat, LookedUp, LookedUpInode, RemoteLookup, SuperblockInner,
+};
 
 /// Handle for an inflight directory listing
 #[derive(Debug)]
@@ -61,8 +63,9 @@ pub struct ReaddirHandle {
     inner: Arc<SuperblockInner>,
     dir_ino: InodeNo,
     parent_ino: InodeNo,
-    iter: AsyncMutex<ReaddirIter>,
-    readded: Mutex<Option<LookedUp>>,
+    iter: ReaddirIter,
+    current: Option<LookedUpInode>,
+    rewinded: bool,
 }
 
 impl ReaddirHandle {
@@ -81,9 +84,8 @@ impl ReaddirHandle {
                 InodeKindData::Directory { writing_children, .. } => writing_children.iter().map(|ino| {
                     let inode = inner.get(*ino)?;
                     let stat = inode.get_inode_state()?.stat.clone();
-                    Ok(ReaddirEntry::LocalInode {
-                        lookup: LookedUp { inode, stat },
-                    })
+                    let lookup = inner.new_lookedup(&inode, stat, false);
+                    Ok(ReaddirEntry::LocalInode { lookup })
                 }),
             };
 
@@ -120,51 +122,56 @@ impl ReaddirHandle {
             inner,
             dir_ino,
             parent_ino,
-            iter: AsyncMutex::new(iter),
-            readded: Default::default(),
+            iter,
+            current: None,
+            rewinded: false,
         })
     }
 
-    /// Return the next inode for the directory stream. If the stream is finished, returns
-    /// `Ok(None)`. Does not increment the lookup count of the returned inodes: the caller
-    /// is responsible for calling [`remember()`] if required.
-    pub async fn next<OC: ObjectClient>(&self, client: &OC) -> Result<Option<LookedUp>, InodeError> {
-        if let Some(readded) = self.readded.lock().unwrap().take() {
-            return Ok(Some(readded));
+    /// Advance to the next inode for the directory stream. If the stream is finished, returns
+    /// `Ok(false)`.
+    pub async fn next<OC: ObjectClient>(&mut self, client: &OC) -> Result<Option<&LookedUp>, InodeError> {
+        if self.rewinded {
+            self.rewinded = false;
+            return Ok(self.current.as_ref().map(|e| &e.lookup));
         }
+
+        self.current = None;
 
         // Loop because the next entry from the [ReaddirIter] may be hidden from the file system,
         // if it has an invalid name.
-        loop {
-            let next = {
-                let mut iter = self.iter.lock().await;
-                iter.next(client).await?
+        while let Some(next) = self.iter.next(client).await? {
+            let Ok(name) = next.name().try_into() else {
+                // Short-circuit the update if we know it'll fail because the name is invalid
+                warn!("{} has an invalid name and will be unavailable", next.description());
+                continue;
             };
-
-            if let Some(next) = next {
-                let Ok(name) = next.name().try_into() else {
-                    // Short-circuit the update if we know it'll fail because the name is invalid
-                    warn!("{} has an invalid name and will be unavailable", next.description());
-                    continue;
-                };
-                let remote_lookup = self.remote_lookup_from_entry(&next);
-                let lookup = self.inner.update_from_remote(self.dir_ino, name, remote_lookup)?;
-                return Ok(Some(lookup));
-            } else {
-                return Ok(None);
-            }
+            let remote_lookup = self.remote_lookup_from_entry(&next);
+            let entry = self.inner.update_from_remote(self.dir_ino, name, remote_lookup)?;
+            self.current = Some(entry);
+            return Ok(self.current.as_ref().map(|e| &e.lookup));
         }
+        Ok(None)
     }
 
-    /// Re-add an entry to the front of the queue if the consumer wasn't able to use it
-    pub fn readd(&self, entry: LookedUp) {
-        let old = self.readded.lock().unwrap().replace(entry);
-        assert!(old.is_none(), "cannot readd more than one entry");
+    /// Rewind by one entry, so the next call to advance is a no-op
+    pub fn rewind(&mut self) {
+        assert!(!self.rewinded, "cannot rewind more than once");
+        self.rewinded = true;
     }
 
-    /// Increase the lookup count of the looked up inode and
+    // Return the current entry
+    #[allow(unused)]
+    pub fn current(&self) -> Option<&LookedUp> {
+        self.current.as_ref().map(|e| &e.lookup)
+    }
+
+    /// Increase the lookup count of the current inode and
     /// ensure it is registered with the superblock.
-    pub fn remember(&self, entry: &LookedUp) {
+    pub fn remember_current(&self) {
+        let Some(entry) = &self.current else {
+            return;
+        };
         self.inner.remember(&entry.inode);
     }
 
@@ -212,10 +219,14 @@ impl ReaddirHandle {
     }
 
     #[cfg(test)]
-    pub(super) async fn collect<OC: ObjectClient>(&self, client: &OC) -> Result<Vec<LookedUp>, InodeError> {
+    pub(super) async fn collect_and_remember<OC: ObjectClient>(
+        mut self,
+        client: &OC,
+    ) -> Result<Vec<LookedUp>, InodeError> {
         let mut result = vec![];
         while let Some(entry) = self.next(client).await? {
-            result.push(entry);
+            result.push(entry.clone());
+            self.remember_current();
         }
         Ok(result)
     }
@@ -264,7 +275,7 @@ impl ReaddirEntry {
         match self {
             Self::RemotePrefix { name } => name,
             Self::RemoteObject { name, .. } => name,
-            Self::LocalInode { lookup } => lookup.inode.name(),
+            Self::LocalInode { lookup } => lookup.name(),
         }
     }
 
@@ -286,11 +297,11 @@ impl ReaddirEntry {
                 format!("file '{}' (full key {:?})", name, full_key)
             }
             Self::LocalInode { lookup } => {
-                let kind = match lookup.inode.kind() {
+                let kind = match lookup.kind() {
                     InodeKind::Directory => "directory",
                     InodeKind::File => "file",
                 };
-                format!("local {} '{}'", kind, lookup.inode.name())
+                format!("local {} '{}'", kind, lookup.name())
             }
         }
     }
@@ -609,7 +620,7 @@ mod unordered {
                     let ReaddirEntry::LocalInode { lookup } = &entry else {
                         unreachable!("local entries are always LocalInode");
                     };
-                    (lookup.inode.name().to_owned(), entry)
+                    (lookup.name().to_owned(), entry)
                 })
                 .collect::<HashMap<_, _>>();
 
