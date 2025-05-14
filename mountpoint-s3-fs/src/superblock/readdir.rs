@@ -59,8 +59,8 @@ use super::{
 
 /// Handle for an inflight directory listing
 #[derive(Debug)]
-pub struct ReaddirHandle {
-    inner: Arc<SuperblockInner>,
+pub struct ReaddirHandle<OC: ObjectClient> {
+    inner: Arc<SuperblockInner<OC>>,
     dir_ino: InodeNo,
     parent_ino: InodeNo,
     iter: ReaddirIter,

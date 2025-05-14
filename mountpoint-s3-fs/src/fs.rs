@@ -57,7 +57,7 @@ where
 {
     config: S3FilesystemConfig,
     client: Client,
-    superblock: Superblock,
+    superblock: Superblock<Client>,
     prefetcher: Prefetcher<Client>,
     uploader: Uploader<Client>,
     bucket: String,

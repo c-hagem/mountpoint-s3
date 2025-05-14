@@ -15,10 +15,10 @@ use crate::upload::{AppendUploadRequest, UploadRequest};
 use super::{DirectoryEntry, Error, InodeNo, OpenFlags, S3Filesystem, ToErrno};
 
 #[derive(Debug)]
-pub struct DirHandle {
+pub struct DirHandle<OC: ObjectClient> {
     #[allow(unused)]
     ino: InodeNo,
-    pub handle: AsyncMutex<ReaddirHandle>,
+    pub handle: AsyncMutex<ReaddirHandle<OC>>,
     offset: AtomicI64,
     pub last_response: AsyncMutex<Option<(i64, Vec<DirectoryEntry>)>>,
 }

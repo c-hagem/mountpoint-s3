@@ -64,12 +64,12 @@ pub use readdir::ReaddirHandle;
 
 /// Superblock is the root object of the file system
 #[derive(Debug)]
-pub struct Superblock {
-    inner: Arc<SuperblockInner>,
+pub struct Superblock<OC: ObjectClient> {
+    inner: Arc<SuperblockInner<OC>>,
 }
 
 #[derive(Debug)]
-struct SuperblockInner {
+struct SuperblockInner<OC: ObjectClient> {
     bucket: String,
     prefix: Prefix,
     inodes: RwLock<InodeMap>,
@@ -77,6 +77,7 @@ struct SuperblockInner {
     next_ino: AtomicU64,
     mount_time: OffsetDateTime,
     config: SuperblockConfig,
+    client: OC,
 }
 
 /// Configuration for superblock operations
@@ -88,9 +89,9 @@ pub struct SuperblockConfig {
     pub manifest: Option<Manifest>,
 }
 
-impl Superblock {
+impl<OC> Superblock<OC> {
     /// Create a new Superblock that targets the given bucket/prefix
-    pub fn new(bucket: &str, prefix: &Prefix, config: SuperblockConfig) -> Self {
+    pub fn new(bucket: &str, prefix: &Prefix, config: SuperblockConfig, client: &OC) -> Self {
         let mount_time = OffsetDateTime::now_utc();
         let root = Inode::new_root(prefix, mount_time);
 
@@ -110,6 +111,7 @@ impl Superblock {
             next_ino: AtomicU64::new(2),
             mount_time,
             config,
+            client,
         };
         Self { inner: Arc::new(inner) }
     }
@@ -183,17 +185,12 @@ impl Superblock {
 
     /// Lookup an inode in the parent directory with the given name and
     /// increments its lookup count.
-    pub async fn lookup<OC: ObjectClient>(
-        &self,
-        client: &OC,
-        parent_ino: InodeNo,
-        name: &OsStr,
-    ) -> Result<LookedUp, InodeError> {
+    pub async fn lookup(&self, client: &OC, parent_ino: InodeNo, name: &OsStr) -> Result<LookedUp, InodeError> {
         trace!(parent=?parent_ino, ?name, "lookup");
         let LookedUpInode { inode, lookup } = self
             .inner
             .lookup_by_name(
-                client,
+                self.client,
                 parent_ino,
                 name,
                 self.inner.config.cache_config.serve_lookup_from_cache,
@@ -204,12 +201,7 @@ impl Superblock {
     }
 
     /// Retrieve the attributes for an inode
-    pub async fn getattr<OC: ObjectClient>(
-        &self,
-        client: &OC,
-        ino: InodeNo,
-        force_revalidate: bool,
-    ) -> Result<LookedUp, InodeError> {
+    pub async fn getattr(&self, client: &OC, ino: InodeNo, force_revalidate: bool) -> Result<LookedUp, InodeError> {
         let inode = self.inner.get(ino)?;
         logging::record_name(inode.name());
 
@@ -242,7 +234,7 @@ impl Superblock {
     }
 
     /// Set the attributes for an inode
-    pub async fn setattr<OC: ObjectClient>(
+    pub async fn setattr(
         &self,
         _client: &OC,
         ino: InodeNo,
@@ -278,8 +270,20 @@ impl Superblock {
         Ok(self.inner.new_lookedup(&inode, stat, is_remote))
     }
 
+<<<<<<< Updated upstream
     /// Prepare an inode to start writing.
     pub async fn start_writing(&self, ino: InodeNo, mode: &WriteMode, is_truncate: bool) -> Result<(), InodeError> {
+=======
+    /// Create a new handle for a file being written. The handle can be used to update the state of
+    /// the inflight write and commit it once finished.
+    pub async fn write(
+        &self,
+        _client: &OC,
+        ino: InodeNo,
+        mode: &WriteMode,
+        is_truncate: bool,
+    ) -> Result<WriteHandle, InodeError> {
+>>>>>>> Stashed changes
         trace!(?ino, "write");
         let inode = self.inner.get(ino)?;
         let mut state = inode.get_mut_inode_state()?;
@@ -308,6 +312,7 @@ impl Superblock {
         Ok(())
     }
 
+<<<<<<< Updated upstream
     /// Increase the size of a file open for writing.
     pub fn inc_file_size(&self, ino: InodeNo, len: usize) -> Result<usize, InodeError> {
         let inode = self.inner.get(ino)?;
@@ -380,6 +385,11 @@ impl Superblock {
 
     /// Prepare an inode to start reading.
     pub async fn start_reading(&self, ino: InodeNo) -> Result<(), InodeError> {
+=======
+    /// Create a new handle for a file being read. The handle can be used to update the state of
+    /// the inflight read and commit it once finished.
+    pub async fn read(&self, _client: &OC, ino: InodeNo) -> Result<ReadHandle, InodeError> {
+>>>>>>> Stashed changes
         trace!(?ino, "read");
 
         let inode = self.inner.get(ino)?;
@@ -405,12 +415,7 @@ impl Superblock {
     /// Start a readdir stream for the given directory inode
     ///
     /// Doesn't currently do any IO, so doesn't need to be async, but reserving it for future use.
-    pub async fn readdir<OC: ObjectClient>(
-        &self,
-        _client: &OC,
-        dir_ino: InodeNo,
-        page_size: usize,
-    ) -> Result<ReaddirHandle, InodeError> {
+    pub async fn readdir(&self, _client: &OC, dir_ino: InodeNo, page_size: usize) -> Result<ReaddirHandle, InodeError> {
         trace!(dir=?dir_ino, "readdir");
 
         let dir = self.inner.get(dir_ino)?;
@@ -426,7 +431,7 @@ impl Superblock {
     }
 
     /// Create a new regular file or directory inode ready to be opened in write-only mode
-    pub async fn create<OC: ObjectClient>(
+    pub async fn create(
         &self,
         client: &OC,
         dir: InodeNo,
@@ -494,6 +499,7 @@ impl Superblock {
 
     /// Remove local-only empty directory, i.e., the ones created by mkdir.
     /// It does not affect empty directories represented remotely with directory markers.
+<<<<<<< Updated upstream
     pub async fn rmdir<OC: ObjectClient>(
         &self,
         client: &OC,
@@ -501,6 +507,10 @@ impl Superblock {
         name: &OsStr,
     ) -> Result<(), InodeError> {
         let LookedUpInode { inode, .. } = self
+=======
+    pub async fn rmdir(&self, client: &OC, parent_ino: InodeNo, name: &OsStr) -> Result<(), InodeError> {
+        let LookedUp { inode, .. } = self
+>>>>>>> Stashed changes
             .inner
             .lookup_by_name(
                 client,
@@ -567,12 +577,7 @@ impl Superblock {
     /// We know that the Linux Kernel's VFS will lock both the parent and child,
     /// so we can safely ignore concurrent operations within the same Mountpoint process to the file and its parent.
     /// See: https://www.kernel.org/doc/html/next/filesystems/directory-locking.html
-    pub async fn unlink<OC: ObjectClient>(
-        &self,
-        client: &OC,
-        parent_ino: InodeNo,
-        name: &OsStr,
-    ) -> Result<(), InodeError> {
+    pub async fn unlink(&self, client: &OC, parent_ino: InodeNo, name: &OsStr) -> Result<(), InodeError> {
         let parent = self.inner.get(parent_ino)?;
         let LookedUpInode { inode, .. } = self
             .inner
@@ -653,7 +658,7 @@ impl Superblock {
     }
 }
 
-impl SuperblockInner {
+impl<OC> SuperblockInner<OC> {
     /// Retrieve the inode for the given number if it exists.
     ///
     /// The expiry of its stat field is not checked.
@@ -690,7 +695,7 @@ impl SuperblockInner {
     /// Updates the parent inode to be in sync with the client, but does
     /// not add new inodes to the superblock. The caller is responsible
     /// for calling [`remember()`] if that is required.
-    pub async fn lookup_by_name<OC: ObjectClient>(
+    pub async fn lookup_by_name(
         &self,
         client: &OC,
         parent_ino: InodeNo,
@@ -730,7 +735,7 @@ impl SuperblockInner {
     /// If an entry is found in the negative cache, returns [Some(Err(InodeError::FileDoesNotExist))].
     fn cache_lookup(&self, parent_ino: InodeNo, name: &str) -> Option<Result<LookedUpInode, InodeError>> {
         fn do_cache_lookup(
-            superblock: &SuperblockInner,
+            superblock: &SuperblockInner<OC>,
             parent: Inode,
             name: &str,
         ) -> Option<Result<LookedUpInode, InodeError>> {
@@ -814,7 +819,7 @@ impl SuperblockInner {
 
     /// Lookup an inode in the parent directory with the given name
     /// on the remote client.
-    async fn remote_lookup<OC: ObjectClient>(
+    async fn remote_lookup(
         &self,
         client: &OC,
         parent_ino: InodeNo,
