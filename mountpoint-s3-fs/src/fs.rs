@@ -417,10 +417,10 @@ where
         };
 
         let inode = lookup.inode.clone();
-        let full_key = self.superblock.full_key_for_inode(&inode);
+        let full_key = lookup.full_key;
         let handle = FileHandle {
             inode,
-            full_key,
+            full_key: full_key.to_string(),
             open_pid: pid,
             state: AsyncMutex::new(state),
         };

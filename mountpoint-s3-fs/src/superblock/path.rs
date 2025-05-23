@@ -1,14 +1,15 @@
 use std::ffi::OsStr;
+use std::fmt::Display;
 use std::ops::Deref;
 
 use thiserror::Error;
 
+use super::Prefix;
 use super::{InodeError, InodeKind};
-
 /// Key associated with an [Inode](super::Inode).
 ///
 /// Does not include the [Prefix](super::Prefix). Guaranteed to end in '/' for directories.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ValidKey {
     key: Box<str>,
     name_offset: usize,
@@ -73,11 +74,18 @@ impl ValidKey {
             _ => InodeKind::File,
         }
     }
-}
 
-impl AsRef<str> for ValidKey {
-    fn as_ref(&self) -> &str {
-        &self.key
+    // Create a new key including a [Prefix].
+    pub fn full_key(&self, prefix: &Prefix) -> Self {
+        let prefix = prefix.as_str();
+        let name_offset = self.name_offset + prefix.len();
+        let mut full_key = String::with_capacity(prefix.len() + self.key.len());
+        full_key.push_str(prefix);
+        full_key.push_str(&self.key);
+        Self {
+            key: full_key.into_boxed_str(),
+            name_offset,
+        }
     }
 }
 
@@ -138,6 +146,24 @@ impl Deref for ValidName<'_> {
 impl AsRef<str> for ValidName<'_> {
     fn as_ref(&self) -> &str {
         self.0
+    }
+}
+
+impl Display for ValidKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.key)
+    }
+}
+
+impl From<ValidKey> for String {
+    fn from(value: ValidKey) -> Self {
+        value.key.into_string()
+    }
+}
+
+impl AsRef<str> for ValidKey {
+    fn as_ref(&self) -> &str {
+        self.key.as_ref()
     }
 }
 

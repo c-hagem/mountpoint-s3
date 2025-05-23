@@ -80,9 +80,10 @@ impl ReaddirHandle {
                 InodeKindData::File { .. } => return Err(InodeError::NotADirectory(inode.err())),
                 InodeKindData::Directory { writing_children, .. } => writing_children.iter().map(|ino| {
                     let inode = inner.get(*ino)?;
+                    let full_key = inner.full_key_for_inode(&inode);
                     let stat = inode.get_inode_state()?.stat.clone();
                     Ok(ReaddirEntry::LocalInode {
-                        lookup: LookedUp { inode, stat },
+                        lookup: LookedUp { inode, stat, full_key },
                     })
                 }),
             };
@@ -149,7 +150,8 @@ impl ReaddirHandle {
                 };
                 let remote_lookup = self.remote_lookup_from_entry(&next);
                 let lookup = self.inner.update_from_remote(self.dir_ino, name, remote_lookup)?;
-                return Ok(Some(lookup));
+                let full_key = self.inner.full_key_for_inode(&lookup.inode);
+                return Ok(Some(lookup.into_lookup(full_key)));
             } else {
                 return Ok(None);
             }
