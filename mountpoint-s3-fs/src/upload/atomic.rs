@@ -118,6 +118,9 @@ where
     }
 
     pub async fn complete(self) -> Result<PutObjectResult, UploadError<Client::ClientError>> {
+        let verify = crate::sync::Arc::new(crate::sync::atomic::AtomicBool::new(true));
+        let verify_clone = verify.clone();
+
         let size = self.size();
         let checksum = self.hasher.finalize();
         let result = self
@@ -125,8 +128,18 @@ where
             .into_inner()
             .await?
             .unwrap()
-            .review_and_complete(move |review| verify_checksums(review, size, checksum))
+            .review_and_complete(move |review| {
+                let ok = verify_checksums(review, size, checksum);
+                verify.store(ok, crate::sync::atomic::Ordering::SeqCst);
+                true
+            })
             .await?;
+
+        if !verify_clone.load(crate::sync::atomic::Ordering::SeqCst) {
+            error!("verify_checksums failed!");
+            return Err(UploadError::UploadAlreadyTerminated);
+        }
+
         if let Err(err) = self
             .sse
             .verify_response(result.sse_type.as_deref(), result.sse_kms_key_id.as_deref())
@@ -189,6 +202,9 @@ fn verify_checksums(review: UploadReview, expected_size: u64, expected_checksum:
             ?expected_checksum,
             "Combined checksum of all uploaded parts differs from expected checksum"
         );
+
+        error!(?review, "failed verify checksum");
+
         return false;
     }
 
