@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ## Unreleased (v0.16.1)
 
 * Update to latest CRT dependencies.
@@ -5,6 +6,13 @@
 ## v0.16.0 (Jun 19, 2025)
 
 * Add support for RenameObject API. ([#1468](https://github.com/awslabs/mountpoint-s3/pull/1468))
+=======
+## Unreleased (v0.15.1)
+
+### Other changes
+
+* Update to latest CRT dependencies.
+>>>>>>> 3e6bb0b2 (Reapply "Update CRT submodules to latest releases (#1458)" (#1466))
 
 ## v0.15.0 (May 27, 2025)
 
