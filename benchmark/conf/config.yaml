@@ -8,6 +8,47 @@ defaults:
 
 # ===== Common parameters for all benchmarks =====
 s3_bucket: ???
+<<<<<<< HEAD
+=======
+s3_prefix: !!null
+
+read_part_size: !!null
+write_part_size: 16777216 # to allow for uploads of 100GiB
+
+metadata_ttl: "indefinite"
+
+fio_benchmarks:
+  - sequential_read
+
+# Path to Mountpoint binary. Recommended to use an absolute path.
+mountpoint_binary: !!null
+mountpoint_debug: false
+mountpoint_debug_crt: false
+
+# No configuration out of the box, use defaults.
+network:
+  interface_names: []
+  maximum_throughput_gbps: !!null
+
+# For overriding upload checksums configured for Mountpoint. Passed as `--upload-checksums` argument.
+upload_checksums: !!null
+
+# For overriding fuse max_background and congestion threshold setttings
+# environment variables
+mountpoint_max_background: !!null
+mountpoint_congestion_threshold: !!null
+
+# For monitoring network bandwidth
+with_bwm: false
+
+# Works automatically ONLY where this script manages compilation. It has no effect if `mountpoint_binary` is set.
+stub_mode: "fs_handler" # fs_handler
+mountpoint_clone_fuse_fd: false
+iterations: 1
+
+# Define defaults for these columns, but script will run as MULTIRUN by default
+fuse_threads: !!null
+>>>>>>> e4432a94 (Put the FUSE_DEV_IOC_CLONE behind env var)
 application_workers: 1
 iteration: 0
 iterations: 1
@@ -68,6 +109,7 @@ benchmarks:
 
 
 hydra:
+<<<<<<< HEAD
     help:
         app_name: "Mountpoint benchmark runner"
     mode: MULTIRUN
@@ -84,3 +126,22 @@ hydra:
             "benchmarks.fio.direct_io": false, true
             # 'benchmarks.prefetch.max_memory_target': !!null, 1073741824, 2147483648  # null, 1GB, 2GB
             #'benchmarks.client_backpressure.read_window_size': 8388608, 2147483648
+=======
+  help:
+    app_name: "Mountpoint sequential read experiment runner"
+  mode: MULTIRUN
+  job:
+    chdir: true
+  sweeper:
+    params:
+      # Maximum number of FUSE threads for Mountpoint. Passed as `--max-threads` argument.
+      'fuse_threads': 1, 3, 16
+      # Number of processes that will be interacting with the file.
+      'application_workers': 1, 16
+      # Configure if application should use Direct IO, skipping the Linux page cache
+      'direct_io': true
+      'mountpoint_clone_fuse_fd': false, true
+      # Don't touch the params below, they are based on settings above.
+      'fio_benchmark': "${join:',', ${fio_benchmarks}}"
+      'iteration': "range(${iterations})"
+>>>>>>> e4432a94 (Put the FUSE_DEV_IOC_CLONE behind env var)
