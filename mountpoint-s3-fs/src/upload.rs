@@ -16,7 +16,7 @@ mod atomic;
 pub use atomic::UploadRequest;
 use atomic::UploadRequestParams;
 
-mod hasher;
+pub mod hasher;
 pub use hasher::ChecksumHasherError;
 
 mod incremental;
