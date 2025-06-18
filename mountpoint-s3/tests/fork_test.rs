@@ -1,16 +1,22 @@
 // These tests all run the main binary and so expect to be able to reach S3
 #![cfg(feature = "s3_tests")]
 #![cfg(feature = "fuse_tests")]
-
+use crate::fs::remove_file;
 use assert_cmd::prelude::*;
 #[cfg(not(feature = "s3express_tests"))]
 use aws_sdk_s3::primitives::ByteStream;
+use chrono;
 use fuser::MountOption;
+use mountpoint_s3_client::types::ChecksumAlgorithm;
+use mountpoint_s3_fs::upload::hasher::ChecksumHasher;
 use predicates::prelude::*;
+use rand::rngs::SmallRng;
+use rand::RngCore;
+use rand::SeedableRng;
+use rand::{distributions::Alphanumeric, Rng}; // 0.8
 use std::fs::{self, File};
 #[cfg(not(feature = "s3express_tests"))]
-use std::io::Read;
-use std::io::{self, BufRead, BufReader, Cursor, Write};
+use std::io::{self, BufRead, BufReader, Cursor, Read, Write};
 use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::process::{Child, ExitStatus, Stdio};
@@ -18,6 +24,7 @@ use std::time::{Duration, Instant};
 use std::{path::PathBuf, process::Command};
 use tempfile::NamedTempFile;
 use test_case::test_case;
+use tracing::debug;
 
 mod common;
 
@@ -174,6 +181,8 @@ fn run_in_foreground() -> Result<(), Box<dyn std::error::Error>> {
         .arg("--auto-unmount")
         .arg("--foreground")
         .arg(format!("--region={region}"));
+    let child = cmd.spawn().expect("unable to spawn child");
+
     if let Some(endpoint_url) = get_test_endpoint_url() {
         cmd.arg(format!("--endpoint-url={endpoint_url}"));
     }
@@ -1246,4 +1255,112 @@ fn create_cli_config_file(
     }
 
     Ok(config_file)
+}
+
+#[test]
+fn fork_test_write_repeatedly_until_failure() -> Result<(), Box<dyn std::error::Error>> {
+    println!("Starting test");
+    // Create a log directory
+
+    let (bucket, prefix) = get_test_bucket_and_prefix("fork_test_write_repeatedly_until_failure");
+    let mount_point = assert_fs::TempDir::new().expect("can not create a mount dir");
+    let log_dir = assert_fs::TempDir::new().expect("can not create a mount dir");
+
+    let ITERATIONS = 10;
+    let WRITE_DURATION = Duration::from_secs(30);
+    let region = get_test_region();
+    let mut cmd = Command::cargo_bin("mount-s3")?;
+    let process = cmd
+        .arg(&bucket)
+        .arg(mount_point.path())
+        .arg(format!("--prefix={prefix}"))
+        .arg("--auto-unmount")
+        .arg("--allow-overwrite")
+        .arg("--allow-delete")
+        .arg(format!("--region={region}"))
+        .arg("--foreground");
+    if let Some(endpoint_url) = get_test_endpoint_url() {
+        cmd.arg(format!("--endpoint-url={endpoint_url}"));
+    }
+    let mut child = cmd.spawn()?;
+    wait_for_mount("mountpoint-s3", mount_point.path().to_str().unwrap());
+
+    // verify that process is still alive
+    let child_status = child.try_wait().unwrap();
+    assert_eq!(None, child_status);
+
+    assert!(mount_exists("mountpoint-s3", mount_point.path().to_str().unwrap()));
+
+    let mut buffer = vec![0u8; 16 * 1024 * 1024]; // Create a mutable buffer of size 10, initialized with zeros
+    let mut rng = SmallRng::from_entropy();
+
+    rng.fill_bytes(&mut buffer); // Fill the buffer with random bytes
+
+    for iter in 0..ITERATIONS {
+        // Create a random file name
+        let filename: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(20)
+            .map(char::from)
+            .collect();
+        println!("Iteration {iter} writing to {filename}");
+        let algo = Some(ChecksumAlgorithm::Crc32c);
+        let mut hasher = ChecksumHasher::new(&algo)?;
+        let file_path = mount_point.path().join(&filename);
+        let mut file = File::create(&file_path).expect("Failed to create file");
+        let start_time = Instant::now();
+        let mut part_count = 0;
+        // Write random content to that file for ca. 40 seconds, while doing so update the CRC32 hash
+        while start_time.elapsed() < WRITE_DURATION || part_count < 2813 {
+            if part_count % 500 == 0 {
+                println!("Writing part {part_count}");
+            }
+            file.write_all(&buffer).expect("Failed to write to file");
+            hasher.update(&buffer)?;
+            part_count = part_count + 1;
+        }
+        let final_checksum = hasher.finalize()?;
+        println!("Expect final checksum {final_checksum:?}");
+        let result = file.sync_all();
+        drop(file);
+        println!("Written with hash {final_checksum:?}");
+        if result.is_err() {
+            let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+            let log_file_name = format!("error_log_{timestamp}_{}.txt", filename);
+            unmount(&mount_point);
+            let mut stdout = child.stdout.take().expect("stdout shouldn't be consumed at this point");
+            wait_for_exit(child);
+            let mut log_output = Vec::new();
+            stdout
+                .read_to_end(&mut log_output)
+                .expect("failed to read mountpoint log from pipe");
+
+            // Create the error log file with all relevant information
+            let mut error_log = File::create(&log_file_name).expect("Failed to create error log file");
+
+            writeln!(error_log, "Error Log for Failed Write Test").unwrap();
+            writeln!(error_log, "Timestamp: {}", timestamp).unwrap();
+            writeln!(error_log, "Filename: {}", filename).unwrap();
+            writeln!(error_log, "Expected Checksum: {:?}", final_checksum).unwrap();
+            writeln!(error_log, "Error: {:?}", result.unwrap_err()).unwrap();
+            writeln!(error_log, "\nMount Point: {:?}", mount_point.path()).unwrap();
+            writeln!(error_log, "Bucket: {}", bucket).unwrap();
+            writeln!(error_log, "Prefix: {}", prefix).unwrap();
+            writeln!(error_log, "Region: {}", region).unwrap();
+            writeln!(error_log, "\nTest Parameters:").unwrap();
+            writeln!(error_log, "Buffer size: {} bytes", buffer.len()).unwrap();
+            writeln!(error_log, "Parts written: {}", part_count).unwrap();
+            writeln!(error_log, "Write duration: {:?}", start_time.elapsed()).unwrap();
+            writeln!(error_log, "\nMount process output:").unwrap();
+            writeln!(error_log, "----------------------------------------").unwrap();
+            error_log.write_all(&log_output).unwrap();
+
+            println!("Error log saved to: {}", log_file_name);
+            panic!("Write operation failed. Hash is different, running hash calculation yields {final_checksum:?}");
+        }
+
+        remove_file(&file_path).expect("Failed to remove file");
+    }
+
+    Ok(())
 }
