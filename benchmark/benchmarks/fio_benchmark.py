@@ -1,6 +1,7 @@
 import logging
 import os
 from subprocess import Popen, CalledProcessError
+import subprocess
 import tempfile
 from typing import Dict, Any
 from datetime import datetime, timezone
@@ -24,6 +25,24 @@ class FioBenchmark(BaseBenchmark):
         self.fio_config = self.config_parser.get_fio_config()
         self.mount_dir = None
         self.target_pid = None
+        self.dev_id = None
+
+    def _get_dev_id(mount_dir):
+        """Get device ID from /proc/self/mountinfo for for overwriting read_ahead_kb."""
+        with open('/proc/self/mountinfo', 'r') as f:
+            for line in f:
+                fields = line.split()
+                if fields[4] == mount_dir:  # Check if mount point matches
+                    # Device ID is in the format "major:minor"
+                    dev_id = fields[2]
+                    return dev_id
+        raise RuntimeError(f"Could not find device ID for mount point {mount_dir}")
+
+    def _set_read_ahead(self, value):
+        read_ahead_path = f"/sys/class/bdi/{self.dev_id}/read_ahead_kb"
+        cmd = f'echo {value} > {read_ahead_path}'
+        # Needs sudo permissions
+        subprocess.run(['sudo', 'sh', '-c', cmd], check=True, capture_output=True)
 
     def setup(self) -> Dict[str, Any]:
         self.mount_dir = tempfile.mkdtemp(suffix=".mountpoint-s3")
@@ -54,6 +73,12 @@ class FioBenchmark(BaseBenchmark):
         fio_env["UNIQUE_DIR"] = datetime.now(tz=timezone.utc).isoformat()
         fio_env["IO_ENGINE"] = self.fio_config['fio_io_engine']
         fio_env["RUN_TIME"] = str(self.common_config['run_time'])
+        fio_env["BLOCK_SIZE"] = str(self.common_config['read_size'])
+
+        # Increase the read_ahead_kb limit to allow reads higher than 256K.
+        # The script needs sudo permissions to overwrite this limit
+        if not self.fio_config['direct_io'] and self.common_config['read_size'] > 256 * 1024:
+            self._set_read_ahead(self.common_config['read_size'])
 
         log.info("Running FIO with args: %s; env: %s", subprocess_args, fio_env)
         subprocess_env = os.environ.copy()
