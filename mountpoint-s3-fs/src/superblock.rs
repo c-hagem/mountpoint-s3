@@ -21,6 +21,7 @@
 //! Some cached state is dependent on the inode kind; that state is hidden behind a [InodeStatKind]
 //! enum.
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Debug;
@@ -138,14 +139,14 @@ impl<'a> PendingRenameGuard<'a> {
     /// Take an inode and, if (and only if) currently in Remote state, transition into `PendingRename`.
     fn try_transition(inode: &'a Inode) -> Result<Self, InodeError> {
         let mut locked = inode.get_mut_inode_state()?;
-        match locked.state.write_status {
+        match locked.write_status {
             WriteStatus::LocalUnopened | WriteStatus::LocalOpen | WriteStatus::PendingRename => {
                 return Err(InodeError::RenameNotPermittedWhileWriting(inode.err()))
             }
             WriteStatus::Remote => {} // All OK.
         }
 
-        locked.state.write_status = WriteStatus::PendingRename;
+        locked.write_status = WriteStatus::PendingRename;
         drop(locked);
         Ok(PendingRenameGuard { inode: Some(inode) })
     }
@@ -161,8 +162,8 @@ impl Drop for PendingRenameGuard<'_> {
     fn drop(&mut self) {
         if let Some(inode) = self.inode {
             let mut inode_locked = inode.get_mut_inode_state().unwrap();
-            if inode_locked.state.write_status == WriteStatus::PendingRename {
-                inode_locked.state.write_status = WriteStatus::Remote;
+            if inode_locked.write_status == WriteStatus::PendingRename {
+                inode_locked.write_status = WriteStatus::Remote;
             }
         }
     }
@@ -195,11 +196,11 @@ impl<'a> RenameLockGuard<'a> {
         // Take read lock
         let ancestor_check = Self::dst_is_ancestor(&superblock_inner.inodes.read().unwrap(), source_parent, dst_ino);
         if ancestor_check || src_ino > dst_ino {
-            dst_parent_lock = Some(dest_parent.get_mut_inode_state()?.state);
-            src_parent_lock = source_parent.get_mut_inode_state()?.state;
+            dst_parent_lock = Some(dest_parent.get_mut_inode_state()?.into());
+            src_parent_lock = source_parent.get_mut_inode_state()?.into();
         } else {
-            src_parent_lock = source_parent.get_mut_inode_state()?.state;
-            dst_parent_lock = Some(dest_parent.get_mut_inode_state()?.state);
+            src_parent_lock = source_parent.get_mut_inode_state()?.into();
+            dst_parent_lock = Some(dest_parent.get_mut_inode_state()?.into());
         }
         Ok(RenameLockGuard {
             src_parent_lock,
@@ -303,9 +304,9 @@ impl Superblock {
             }
             writing_children.remove(&ino);
 
-            if let Ok(locked) = inode.get_inode_state() {
+            if let Ok(state) = inode.get_inode_state() {
                 metrics::counter!("metadata_cache.inode_forgotten_before_expiry")
-                    .increment(locked.state.stat.is_valid().into());
+                    .increment(state.stat.is_valid().into());
             };
         }
     }
@@ -343,7 +344,7 @@ impl Superblock {
         logging::record_name(inode.name());
 
         if !force_revalidate {
-            let sync = inode.get_inode_state()?.state;
+            let sync = inode.get_inode_state()?;
             if sync.stat.is_valid() {
                 let stat = sync.stat.clone();
                 drop(sync);
@@ -376,7 +377,7 @@ impl Superblock {
     ) -> Result<LookedUp, InodeError> {
         let inode = self.inner.get(ino)?;
         logging::record_name(inode.name());
-        let mut sync = inode.get_mut_inode_state()?.state;
+        let mut sync = inode.get_mut_inode_state()?;
 
         if sync.write_status == WriteStatus::Remote {
             return Err(InodeError::SetAttrNotPermittedOnRemoteInode(inode.err()));
@@ -479,7 +480,7 @@ impl Superblock {
         // Put inode creation in a block so we don't hold the lock on the parent state longer than needed.
         let lookup = {
             let parent_inode = self.inner.get(dir)?;
-            let mut parent_state = parent_inode.get_mut_inode_state()?.state;
+            let mut parent_state = parent_inode.get_mut_inode_state()?;
 
             // Check again for the child now that the parent is locked, since we might have lost to a
             // racing lookup. (It would be nice to lock the parent and *then* lookup, but we'd have to
@@ -540,8 +541,8 @@ impl Superblock {
         }
 
         let parent = self.inner.get(parent_ino)?;
-        let mut parent_state = parent.get_mut_inode_state()?.state;
-        let mut inode_state = inode.get_mut_inode_state()?.state;
+        let mut parent_state = parent.get_mut_inode_state()?;
+        let mut inode_state = inode.get_mut_inode_state()?;
 
         match &inode_state.write_status {
             WriteStatus::LocalOpen => unreachable!("A directory cannot be in Local open state"),
@@ -615,7 +616,7 @@ impl Superblock {
         }
 
         let write_status = {
-            let inode_state = inode.get_inode_state()?.state;
+            let inode_state = inode.get_inode_state()?;
             inode_state.write_status
         };
 
@@ -649,7 +650,7 @@ impl Superblock {
             }
         }
 
-        let mut parent_state = parent.get_mut_inode_state()?.state;
+        let mut parent_state = parent.get_mut_inode_state()?;
         match &mut parent_state.kind_data {
             InodeKindData::File { .. } => {
                 debug_assert!(false, "inodes never change kind");
@@ -958,11 +959,11 @@ impl SuperblockInner {
             parent: Inode,
             name: &str,
         ) -> Option<Result<LookedUp, InodeError>> {
-            match &parent.get_inode_state().ok()?.state.kind_data {
+            match &parent.get_inode_state().ok()?.kind_data {
                 InodeKindData::File { .. } => unreachable!("parent should be a directory!"),
                 InodeKindData::Directory { children, .. } => {
                     if let Some(inode) = children.get(name) {
-                        let inode_stat = &inode.get_inode_state().ok()?.state.stat;
+                        let inode_stat = &inode.get_inode_state().ok()?.stat;
                         if inode_stat.is_valid() {
                             let lookup = LookedUp {
                                 inode: inode.clone(),
@@ -1202,7 +1203,7 @@ impl SuperblockInner {
         remote: &Option<RemoteLookup>,
     ) -> Result<Option<LookedUp>, InodeError> {
         let parent_state = parent.get_inode_state()?;
-        let inode = match &parent_state.state.kind_data {
+        let inode = match &parent_state.kind_data {
             InodeKindData::File { .. } => unreachable!("we know parent is a directory"),
             InodeKindData::Directory { children, .. } => children.get(name),
         };
@@ -1210,13 +1211,13 @@ impl SuperblockInner {
             (None, None) => Err(InodeError::FileDoesNotExist(name.to_owned(), parent.err())),
             (Some(remote), Some(existing_inode)) => {
                 let mut existing_state = existing_inode.get_mut_inode_state()?;
-                let existing_is_remote = existing_state.state.write_status == WriteStatus::Remote;
+                let existing_is_remote = existing_state.write_status == WriteStatus::Remote;
                 if remote.kind == existing_inode.kind()
                     && existing_is_remote
-                    && existing_state.state.stat.etag == remote.stat.etag
+                    && existing_state.stat.etag == remote.stat.etag
                 {
                     trace!(parent=?existing_inode.parent(), name=?existing_inode.name(), ino=?existing_inode.ino(), "updating inode in place");
-                    existing_state.state.stat = remote.stat.clone();
+                    existing_state.stat = remote.stat.clone();
                     Ok(Some(LookedUp {
                         inode: existing_inode.clone(),
                         stat: remote.stat.clone(),
@@ -1261,8 +1262,8 @@ impl SuperblockInner {
                         InodeKind::File => self.config.cache_config.file_ttl,
                         InodeKind::Directory => self.config.cache_config.dir_ttl,
                     };
-                    sync.state.stat.update_validity(validity);
-                    let stat = sync.state.stat.clone();
+                    sync.stat.update_validity(validity);
+                    let stat = sync.stat.clone();
                     drop(sync);
 
                     Ok(LookedUp {
@@ -1290,7 +1291,7 @@ impl SuperblockInner {
                 // remote. Our goal here is for the behavior to be as unsurprising as possible while
                 // being consistent with our stated semantics about implicit directories and how
                 // directories shadow files.
-                let mut existing_state = existing_inode.get_mut_inode_state()?.state;
+                let mut existing_state = existing_inode.get_mut_inode_state()?;
                 let existing_is_remote = existing_state.write_status == WriteStatus::Remote;
 
                 // Remote files are always shadowed by existing local files/directories, so do
@@ -1468,12 +1469,13 @@ impl ReaderCountMap {
     }
 
     fn decrease_reader_count(&mut self, locked_inode: &InodeLockedForWriting) {
-        if let Some(count) = self.map.get_mut(&locked_inode.ino) {
+        if let Entry::Occupied(mut entry) = self.map.entry(locked_inode.ino) {
+            let count = entry.get_mut();
             if *count > 0 {
                 *count -= 1;
             }
             if *count == 0 {
-                self.map.remove(&locked_inode.ino);
+                entry.remove();
             }
         }
     }
@@ -2047,7 +2049,6 @@ mod tests {
                 .inode
                 .get_inode_state()
                 .expect("should get Inode state with read lock")
-                .state
                 .write_status,
             WriteStatus::LocalUnopened
         );
@@ -2251,8 +2252,7 @@ mod tests {
         let parent = superblock.inner.get(FUSE_ROOT_INODE).unwrap();
         let parent_state = parent
             .get_inode_state()
-            .expect("should get parent state with read lock")
-            .state;
+            .expect("should get parent state with read lock");
         match &parent_state.kind_data {
             InodeKindData::File {} => unreachable!("Parent can only be a Directory"),
             InodeKindData::Directory {
@@ -2370,7 +2370,6 @@ mod tests {
                         .inode
                         .get_inode_state()
                         .expect("should get inode state with read lock")
-                        .state
                         .write_status,
                     WriteStatus::LocalUnopened
                 );
