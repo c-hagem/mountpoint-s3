@@ -1328,6 +1328,29 @@ impl<OC: ObjectClient + Send + Sync> SuperblockInner<OC> {
                     // This existing inode is local-only (because `remote` is None), but is not
                     // being written. It must have previously existed but been removed on the remote
                     // side.
+                    // Do not remove if writing_children of this inode is not empty
+
+                    // Check if the existing inode has non-empty writing_children before removing
+                    if existing_inode.kind() == InodeKind::Directory {
+                        let existing_state = existing_inode.get_inode_state()?;
+                        if let InodeKindData::Directory { writing_children, .. } = &existing_state.kind_data {
+                            if !writing_children.is_empty() {
+                                // Cannot remove directory with active writes, return the existing inode
+                                let validity = self.config.cache_config.dir_ttl;
+                                drop(existing_state);
+                                let mut sync = existing_inode.get_mut_inode_state()?;
+                                sync.stat.update_validity(validity);
+                                let stat = sync.stat.clone();
+                                drop(sync);
+
+                                return Ok(LookedUp {
+                                    inode: existing_inode,
+                                    stat,
+                                });
+                            }
+                        }
+                    }
+
                     children.remove(name.as_ref());
                     Err(InodeError::FileDoesNotExist(name.to_string(), parent.err()))
                 }

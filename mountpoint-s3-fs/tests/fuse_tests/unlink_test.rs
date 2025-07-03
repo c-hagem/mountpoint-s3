@@ -1,5 +1,7 @@
+use std::ffi::CString;
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::os::unix::ffi::OsStrExt;
 
 use mountpoint_s3_fs::S3FilesystemConfig;
 use test_case::test_case;
@@ -208,4 +210,49 @@ fn unlink_fail_on_delete_not_allowed_test_s3() {
 #[test]
 fn unlink_fail_on_delete_not_allowed_test_mock() {
     unlink_fail_on_delete_not_allowed_test(fuse::mock_session::new);
+}
+
+fn unlink_semantics_bug(creator_fn: impl TestSessionCreator) {
+    let test_session_config = TestSessionConfig {
+        filesystem_config: S3FilesystemConfig {
+            allow_delete: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let test_session = creator_fn(Default::default(), test_session_config);
+
+    // Step 1: Put file into S3 a/b
+    test_session.client().put_object("a/a", &[0u8; 4]).unwrap();
+
+    let a_dir = test_session.mount_path().join("a");
+    let local_file_path = a_dir.join("b");
+
+    // Step 2: Open local file (just do the mknod call)
+    let path_cstring = CString::new(local_file_path.as_os_str().as_bytes()).expect("path should be valid");
+    let fd = unsafe {
+        libc::mknod(
+            path_cstring.as_ptr(),
+            libc::S_IFREG | 0o644, // Regular file with 644 permissions
+            0,                     // Device number (not used for regular files)
+        )
+    };
+    assert_eq!(fd, 0, "mknod should succeed");
+    assert!(local_file_path.exists(), "File should exist after mknod");
+
+
+    // Step 3: Delete the remote file / unlink it
+    fs::remove_file(a_dir.join("a")).expect("file remove/unlink should succeed");
+
+    // Step 4: Re-create the directory a/ (should fail) and check what has happened to the file
+    let mkdir_result = fs::create_dir(&a_dir);
+
+// Step 4: Re-create the directory a/ (should fail) and check what has happened to the file
+    let mkdir_result = fs::create_dir(&a_dir);
+    // Check if file a is accessible, using path::exists 
+    assert!(local_file_path.exists(), "File should exist after unlink");
+}
+#[test]
+fn unlink_semantics_bug_mock() {
+    unlink_semantics_bug(fuse::mock_session::new);
 }
