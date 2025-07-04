@@ -1437,10 +1437,4 @@ mod mutations {
         ], 0)
     }
 
-    /*
-     Test directory state preservation when local files exist alongside remote files.
-     This reproduces the bug where local files become inaccessible after remote files
-     in the same directory are deleted, specifically testing the case where a local
-     file is being written while a remote file in the same directory gets unlinked.
-    */
 }
