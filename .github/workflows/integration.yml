@@ -174,6 +174,8 @@ jobs:
         pool:
         - name: Test Pool
           feature: pool_tests
+        - name: FS Pool
+          feature: fs_pool_tests
 
     steps:
     - name: Configure AWS credentials
