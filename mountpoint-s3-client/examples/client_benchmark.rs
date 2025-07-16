@@ -13,11 +13,11 @@ use mountpoint_s3_client::mock_client::{MockClient, MockObject};
 use mountpoint_s3_client::types::{ClientBackpressureHandle, ETag, GetObjectParams, GetObjectResponse};
 use mountpoint_s3_client::{ObjectClient, S3CrtClient};
 use mountpoint_s3_crt::common::rust_log_adapter::RustLogAdapter;
+use mountpoint_s3_fs::memory::PagedPool;
 use serde_json::{json, to_writer};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::Subscriber;
 use tracing_subscriber::util::SubscriberInitExt;
-
 /// Like `tracing_subscriber::fmt::init` but sends logs to stderr
 fn init_tracing_subscriber() {
     RustLogAdapter::try_init().expect("unable to install CRT log adapter");
@@ -220,6 +220,12 @@ struct CliArgs {
         default_value = "0"
     )]
     initial_window_size: Option<usize>,
+    #[arg(
+        long,
+        help = "Run benchmark using CRT pool instead of our pool",
+        default_value_t = false
+    )]
+    use_crt_pool: bool,
     #[arg(long, help = "Output file to write the results to", value_name = "OUTPUT_FILE")]
     output_file: Option<PathBuf>,
     #[arg(
@@ -239,6 +245,11 @@ fn create_s3_client_config(region: &str, args: &CliArgs, nics: Vec<String>) -> S
     config = config.network_interface_names(nics);
 
     config = config.part_size(args.part_size);
+    // Set up the memory pool
+    if !args.use_crt_pool {
+        let pool = PagedPool::new(vec![args.part_size]);
+        config = config.memory_pool(pool);
+    }
 
     if args.enable_backpressure {
         config = config.read_backpressure(true);

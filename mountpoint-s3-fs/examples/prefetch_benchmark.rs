@@ -13,6 +13,7 @@ use mountpoint_s3_client::types::HeadObjectParams;
 use mountpoint_s3_client::{ObjectClient, S3CrtClient};
 use mountpoint_s3_fs::Runtime;
 use mountpoint_s3_fs::mem_limiter::MemoryLimiter;
+use mountpoint_s3_fs::memory::PagedPool;
 use mountpoint_s3_fs::object::ObjectId;
 use mountpoint_s3_fs::prefetch::{PrefetchGetObject, Prefetcher, PrefetcherConfig};
 use serde_json::{json, to_writer};
@@ -117,6 +118,13 @@ pub struct CliArgs {
         value_name = "NETWORK_INTERFACE"
     )]
     pub bind: Option<Vec<String>>,
+
+    #[clap(
+        long,
+        help = "Run benchmark using CRT pool instead of our pool",
+        default_value_t = false
+    )]
+    pub use_crt_pool: bool,
 
     #[clap(long, help = "Output file to write the results to", value_name = "OUTPUT_FILE")]
     pub output_file: Option<PathBuf>,
@@ -278,6 +286,12 @@ fn make_s3_client_from_args(args: &CliArgs) -> anyhow::Result<S3CrtClient> {
         .read_backpressure(true)
         .initial_read_window(initial_read_window_size)
         .endpoint_config(EndpointConfig::new(args.region.as_str()));
+    // Set up the memory pool
+    if !args.use_crt_pool {
+        let pool = PagedPool::new(vec![args.part_size.unwrap_or(8388608) as usize]);
+        client_config = client_config.memory_pool(pool);
+    }
+
     if let Some(throughput_target_gbps) = args.maximum_throughput_gbps {
         client_config = client_config.throughput_target_gbps(throughput_target_gbps as f64);
     }
