@@ -2,9 +2,12 @@ use async_stream::try_stream;
 use futures::task::SpawnExt;
 use futures::{Stream, StreamExt, pin_mut};
 use mountpoint_s3_client::ObjectClient;
+use mountpoint_s3_client::checksums::crc32c::Crc32c;
 use mountpoint_s3_client::types::{ClientBackpressureHandle, GetBodyPart, GetObjectParams, GetObjectResponse};
+use std::env;
 use std::marker::{Send, Sync};
 use std::sync::Arc;
+use std::time::Instant;
 use std::{fmt::Debug, ops::Range};
 use tracing::{Instrument, debug_span, error, trace};
 
@@ -300,7 +303,18 @@ where
                 let chunk = body.split_to(chunk_size);
                 // S3 doesn't provide checksum for us if the request range is not aligned to
                 // object part boundaries, so we're computing our own checksum here.
-                let checksum_bytes = ChecksummedBytes::new(chunk);
+                let checksum_bytes = if env::var("VROOM_VROOM").is_ok() {
+                    // Skip checksum computation if VROOM_VROOM is set
+                    let dummy_checksum = Crc32c::new(0);
+                    ChecksummedBytes::new_from_inner_data(chunk, dummy_checksum)
+                } else {
+                    // Measure the time for checksumming and log it at trace level
+                    let start = Instant::now();
+                    let result = ChecksummedBytes::new(chunk);
+                    let duration = start.elapsed();
+                    trace!("Checksumming for part at offset {} took {:?}", curr_offset, duration);
+                    result
+                };
                 let part = Part::new(self.object_id.clone(), curr_offset, checksum_bytes);
                 curr_offset += part.len() as u64;
                 self.part_queue_producer.push(Ok(part));
