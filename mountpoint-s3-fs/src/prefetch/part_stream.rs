@@ -304,6 +304,7 @@ where
                 let checksum_bytes = ChecksummedBytes::new(chunk);
                 let elapsed = start_time.elapsed();
                 metrics::histogram!("checksum.creation_us").record(elapsed.as_micros() as f64);
+                metrics::counter!("checksum.operations").increment(1);
 
                 let part = Part::new(self.object_id.clone(), curr_offset, checksum_bytes);
                 curr_offset += part.len() as u64;

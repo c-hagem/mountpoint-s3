@@ -267,6 +267,7 @@ where
             next_seq_offset = self.next_sequential_read_offset,
             "read"
         );
+        metrics::counter!("prefetcher.read").increment(1);
         let result = self.try_read(offset, length).await;
         if result.is_err() {
             self.reset_prefetch_to_offset(offset);
