@@ -268,7 +268,10 @@ where
             "read"
         );
         metrics::counter!("prefetcher.read").increment(1);
+        let start_time = std::time::Instant::now();
         let result = self.try_read(offset, length).await;
+        let elapsed = start_time.elapsed();
+        metrics::histogram!("prefetcher.readduration_us").record(elapsed.as_micros() as f64);
         if result.is_err() {
             self.reset_prefetch_to_offset(offset);
         }
