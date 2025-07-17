@@ -293,31 +293,81 @@ where
         pin_mut!(request_stream);
         while let Some(next) = request_stream.next().await {
             let GetBodyPart { offset, data: mut body } = next?;
-            // pre-split the body into multiple parts as suggested by preferred part size
-            // in order to avoid validating checksum on large parts at read.
+
+            // Extract chunks and remember their offsets
+            let mut chunks = Vec::new();
+            let mut offsets = Vec::new();
             let mut curr_offset = offset;
             let alignment = self.preferred_part_size;
+
             while !body.is_empty() {
                 let distance_to_align = alignment - (curr_offset % alignment as u64) as usize;
                 let chunk_size = distance_to_align.min(body.len());
                 let chunk = body.split_to(chunk_size);
-                // S3 doesn't provide checksum for us if the request range is not aligned to
-                // object part boundaries, so we're computing our own checksum here.
-                let checksum_bytes = if env::var("VROOM_VROOM").is_ok() {
-                    // Skip checksum computation if VROOM_VROOM is set
-                    let dummy_checksum = Crc32c::new(0);
-                    ChecksummedBytes::new_from_inner_data(chunk, dummy_checksum)
-                } else {
-                    // Measure the time for checksumming and log it at trace level
-                    let start = Instant::now();
-                    let result = ChecksummedBytes::new(chunk);
-                    let duration = start.elapsed();
-                    trace!("Checksumming for part at offset {} took {:?}", curr_offset, duration);
-                    result
-                };
-                let part = Part::new(self.object_id.clone(), curr_offset, checksum_bytes);
-                curr_offset += part.len() as u64;
-                self.part_queue_producer.push(Ok(part));
+
+                chunks.push(chunk);
+                offsets.push(curr_offset);
+                curr_offset += chunk_size as u64;
+            }
+
+            if env::var("VROOM_VROOM").is_ok() && chunks.len() > 1 {
+                // Only use parallel processing if we have multiple chunks
+                let start = Instant::now();
+
+                // Set up channel for receiving results from threads
+                let (sender, receiver) = std::sync::mpsc::channel();
+
+                // Spawn threads to compute checksums in parallel
+                for (index, chunk) in chunks.into_iter().enumerate() {
+                    let sender = sender.clone();
+                    let chunk_offset = offsets[index];
+
+                    std::thread::spawn(move || {
+                        // Compute the checksum
+                        let checksummed_bytes = ChecksummedBytes::new(chunk);
+                        // Send result back with its index to maintain order
+                        sender
+                            .send((index, chunk_offset, checksummed_bytes))
+                            .expect("channel send should succeed");
+                    });
+                }
+
+                // Drop the original sender to ensure the receiver can complete
+                drop(sender);
+
+                // Collect results, ensuring they're in the correct order
+                let mut results = receiver.into_iter().collect::<Vec<_>>();
+                results.sort_by_key(|(index, _, _)| *index);
+
+                let duration = start.elapsed();
+                trace!("Parallel checksumming of {} chunks took {:?}", results.len(), duration);
+
+                // Create parts and push to queue
+                for (_, offset, checksummed_bytes) in results {
+                    let part = Part::new(self.object_id.clone(), offset, checksummed_bytes);
+                    self.part_queue_producer.push(Ok(part));
+                }
+            } else {
+                // Sequential processing for single chunks or when VROOM_VROOM is set
+                for (i, chunk) in chunks.into_iter().enumerate() {
+                    let offset = offsets[i];
+
+                    let checksummed_bytes = if env::var("VROOM_VROOM").is_ok() {
+                        // Fast path with dummy checksums
+                        let dummy_checksum = Crc32c::new(0);
+                        ChecksummedBytes::new_from_inner_data(chunk, dummy_checksum)
+                    } else {
+                        // Regular checksum computation for single chunks
+                        let start = Instant::now();
+                        let result = ChecksummedBytes::new(chunk);
+                        let duration = start.elapsed();
+                        trace!("Checksumming for part at offset {} took {:?}", offset, duration);
+                        result
+                    };
+
+                    let part = Part::new(self.object_id.clone(), offset, checksummed_bytes);
+                    self.part_queue_producer.push(Ok(part));
+                }
             }
         }
         Ok(())
