@@ -300,7 +300,11 @@ where
                 let chunk = body.split_to(chunk_size);
                 // S3 doesn't provide checksum for us if the request range is not aligned to
                 // object part boundaries, so we're computing our own checksum here.
+                let start_time = std::time::Instant::now();
                 let checksum_bytes = ChecksummedBytes::new(chunk);
+                let elapsed = start_time.elapsed();
+                metrics::histogram!("checksum.creation_us").record(elapsed.as_micros() as f64);
+
                 let part = Part::new(self.object_id.clone(), curr_offset, checksum_bytes);
                 curr_offset += part.len() as u64;
                 self.part_queue_producer.push(Ok(part));
