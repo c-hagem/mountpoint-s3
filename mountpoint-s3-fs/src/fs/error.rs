@@ -132,7 +132,7 @@ impl<E: std::error::Error + Send + Sync + 'static> From<PrefetchReadError<E>> fo
             PrefetchReadError::GetRequestFailed { source, metadata } => {
                 err!(libc::EIO, source:source, Level::WARN, metadata:(*metadata).clone(), "get request failed")
             }
-            PrefetchReadError::Integrity(e) => err!(libc::EIO, source:e, "integrity error"),
+            PrefetchReadError::Integrity(e) => err!(libc::EIO, source:e, "integrity error (CRC64)"),
             PrefetchReadError::PartReadFailed(e) => err!(libc::EIO, source:e, "part read failed"),
             PrefetchReadError::GetRequestTerminatedUnexpectedly
             | PrefetchReadError::GetRequestReturnedWrongOffset { .. }

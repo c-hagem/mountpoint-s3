@@ -39,13 +39,13 @@ use mountpoint_s3_client::{ObjectClient, error_metadata::ProvideErrorMetadata};
 use thiserror::Error;
 use tracing::trace;
 
-use crate::checksums::{ChecksummedBytes, IntegrityError};
+use crate::checksums_crc64::{Crc64ChecksummedBytes, IntegrityError};
 use crate::data_cache::DataCache;
 use crate::fs::error_metadata::{ErrorMetadata, MOUNTPOINT_ERROR_CLIENT};
 use crate::object::ObjectId;
 
-mod backpressure_controller;
-mod builder;
+pub mod backpressure_controller;
+pub mod builder;
 mod caching_stream;
 mod part;
 mod part_queue;
@@ -73,7 +73,7 @@ pub enum PrefetchReadError<E> {
     #[error("get request terminated unexpectedly")]
     GetRequestTerminatedUnexpectedly,
 
-    #[error("integrity check failed")]
+    #[error("integrity check failed (CRC64)")]
     Integrity(#[from] IntegrityError),
 
     #[error("part read failed")]
@@ -256,11 +256,12 @@ where
     /// Read some bytes from the object. This function will always return exactly `size` bytes,
     /// except at the end of the object where it will return however many bytes are left (including
     /// possibly 0 bytes).
+    /// Read the given range from the GetObject stream, blocking when data is not available yet.
     pub async fn read(
         &mut self,
         offset: u64,
         length: usize,
-    ) -> Result<ChecksummedBytes, PrefetchReadError<Client::ClientError>> {
+    ) -> Result<Crc64ChecksummedBytes, PrefetchReadError<Client::ClientError>> {
         trace!(
             offset,
             length,
@@ -278,7 +279,7 @@ where
         &mut self,
         offset: u64,
         length: usize,
-    ) -> Result<ChecksummedBytes, PrefetchReadError<Client::ClientError>> {
+    ) -> Result<Crc64ChecksummedBytes, PrefetchReadError<Client::ClientError>> {
         // Currently, we set preferred part size to the current read size.
         // Our assumption is that the read size will be the same for most sequential
         // read and it can be aligned to the size of prefetched chunks.
@@ -291,7 +292,7 @@ where
 
         let remaining = self.size.saturating_sub(offset);
         if remaining == 0 {
-            return Ok(ChecksummedBytes::default());
+            return Ok(Crc64ChecksummedBytes::default());
         }
         let mut to_read = (length as u64).min(remaining);
 
@@ -320,7 +321,7 @@ where
             self.backpressure_task = Some(self.spawn_read_backpressure_request()?);
         }
 
-        let mut response = ChecksummedBytes::default();
+        let mut response = Crc64ChecksummedBytes::default();
         while to_read > 0 {
             let Some(current_task) = self.backpressure_task.as_mut() else {
                 trace!(offset, length, "read beyond object size");

@@ -9,6 +9,7 @@ use tracing::{Instrument, debug_span, trace, warn};
 
 use crate::async_util::Runtime;
 use crate::checksums::ChecksummedBytes;
+use crate::checksums_crc64::Crc64ChecksummedBytes;
 use crate::data_cache::{BlockIndex, DataCache};
 use crate::mem_limiter::MemoryLimiter;
 use crate::object::ObjectId;
@@ -151,8 +152,12 @@ where
                 Ok(Some(block)) => {
                     trace!(?cache_key, ?range, block_index, "cache hit");
                     // Cache blocks always contain bytes in the request range
-                    let part = try_make_part(&block, block_offset, cache_key, &range).unwrap();
-                    part_queue_producer.push(Ok(part));
+                    // Convert the ChecksummedBytes to Crc64ChecksummedBytes for try_make_part
+                    let crc64_block = Crc64ChecksummedBytes::new(block.into_bytes().unwrap());
+                    let part = try_make_part(&crc64_block, block_offset, cache_key, &range);
+                    if let Some(part) = part {
+                        part_queue_producer.push(Ok(part));
+                    }
                     block_offset += block_size;
 
                     if let Err(e) = self
@@ -282,7 +287,7 @@ where
     ) -> Result<(), PrefetchReadError<E>> {
         let key = self.cache_key.key();
         let block_size = self.cache.block_size();
-        let mut buffer = ChecksummedBytes::default();
+        let mut buffer = Crc64ChecksummedBytes::default();
 
         pin_mut!(request_stream);
         while let Some(next) = request_stream.next().await {
@@ -304,7 +309,7 @@ where
             let mut offset = offset;
             while !body.is_empty() {
                 let remaining = (block_size as usize).saturating_sub(buffer.len()).min(body.len());
-                let chunk: ChecksummedBytes = body.split_to(remaining).into();
+                let chunk: Crc64ChecksummedBytes = body.split_to(remaining).into();
 
                 // We need to return some bytes to the part queue even before we can fill an entire caching block because
                 // we want to start the feedback loop for the flow-control window.
@@ -324,7 +329,8 @@ where
                 offset += chunk.len() as u64;
                 buffer
                     .extend(chunk)
-                    .inspect_err(|e| warn!(key, error=?e, "integrity check for body part failed"))?;
+                    .inspect_err(|e| warn!(key, error=?e, "integrity check for body part failed"))
+                    .map_err(|e| PrefetchReadError::Integrity(e))?;
                 if buffer.len() < block_size as usize {
                     break;
                 }
@@ -333,7 +339,7 @@ where
                 self.update_cache(buffer, self.block_index, self.block_offset, &self.cache_key, range);
                 self.block_index += 1;
                 self.block_offset += block_size;
-                buffer = ChecksummedBytes::default();
+                buffer = Crc64ChecksummedBytes::default();
             }
         }
 
@@ -353,19 +359,28 @@ where
 
     fn update_cache(
         &self,
-        block: ChecksummedBytes,
+        block: Crc64ChecksummedBytes,
         block_index: u64,
         block_offset: u64,
         object_id: &ObjectId,
         range: RequestRange,
     ) {
+        // Convert Crc64ChecksummedBytes to ChecksummedBytes for cache
         let object_id = object_id.clone();
         let cache = self.cache.clone();
         self.runtime
             .spawn(async move {
                 let start = Instant::now();
+                // Convert Crc64ChecksummedBytes to regular ChecksummedBytes for cache
+                let bytes = block.into_bytes().unwrap();
                 if let Err(error) = cache
-                    .put_block(object_id.clone(), block_index, block_offset, block, range.object_size())
+                    .put_block(
+                        object_id.clone(),
+                        block_index,
+                        block_offset,
+                        ChecksummedBytes::new(bytes),
+                        range.object_size(),
+                    )
                     .await
                 {
                     warn!(key=?object_id, block_index, ?error, "failed to update cache");
@@ -378,7 +393,12 @@ where
 
 /// Creates a Part that can be streamed to the prefetcher if the given bytes
 /// are in the request range, otherwise return None.
-fn try_make_part(bytes: &ChecksummedBytes, offset: u64, object_id: &ObjectId, range: &RequestRange) -> Option<Part> {
+fn try_make_part(
+    bytes: &Crc64ChecksummedBytes,
+    offset: u64,
+    object_id: &ObjectId,
+    range: &RequestRange,
+) -> Option<Part> {
     let part_range = range.trim_start(offset).trim_end(offset + bytes.len() as u64);
     if part_range.is_empty() {
         return None;

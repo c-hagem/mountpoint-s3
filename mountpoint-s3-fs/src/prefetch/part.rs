@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::checksums::{ChecksummedBytes, IntegrityError};
+use crate::checksums_crc64::{Crc64ChecksummedBytes, IntegrityError};
 use crate::object::ObjectId;
 
 /// A self-identifying part of an S3 object. Users can only retrieve the bytes from this part if
@@ -9,11 +9,11 @@ use crate::object::ObjectId;
 pub struct Part {
     id: ObjectId,
     offset: u64,
-    checksummed_bytes: ChecksummedBytes,
+    checksummed_bytes: Crc64ChecksummedBytes,
 }
 
 impl Part {
-    pub fn new(id: ObjectId, offset: u64, checksummed_bytes: ChecksummedBytes) -> Self {
+    pub fn new(id: ObjectId, offset: u64, checksummed_bytes: Crc64ChecksummedBytes) -> Self {
         Self {
             id,
             offset,
@@ -27,7 +27,7 @@ impl Part {
         Ok(self.checksummed_bytes.extend(other.clone().checksummed_bytes)?)
     }
 
-    pub fn into_bytes(self, id: &ObjectId, offset: u64) -> Result<ChecksummedBytes, PartOperationError> {
+    pub fn into_bytes(self, id: &ObjectId, offset: u64) -> Result<Crc64ChecksummedBytes, PartOperationError> {
         self.check(id, offset).map(|_| self.checksummed_bytes)
     }
 
@@ -89,7 +89,7 @@ pub enum PartOperationError {
 mod tests {
     use mountpoint_s3_client::types::ETag;
 
-    use crate::{checksums::ChecksummedBytes, object::ObjectId, prefetch::part::PartOperationError};
+    use crate::{checksums_crc64::Crc64ChecksummedBytes, object::ObjectId, prefetch::part::PartOperationError};
 
     use super::Part;
 
@@ -103,7 +103,7 @@ mod tests {
             .skip(first_offset as u8 as usize)
             .take(first_part_len)
             .collect();
-        let checksummed_bytes = ChecksummedBytes::new(body.into());
+        let checksummed_bytes = Crc64ChecksummedBytes::new(body.into());
         let mut first = Part::new(object_id.clone(), first_offset, checksummed_bytes);
 
         let second_part_len = 512;
@@ -113,7 +113,7 @@ mod tests {
             .skip(second_offset as u8 as usize)
             .take(second_part_len)
             .collect();
-        let checksummed_bytes = ChecksummedBytes::new(body.into());
+        let checksummed_bytes = Crc64ChecksummedBytes::new(body.into());
         let second = Part::new(object_id.clone(), second_offset, checksummed_bytes);
 
         first.extend(&second).expect("should be able to extend");
@@ -131,7 +131,7 @@ mod tests {
             .skip(first_offset as u8 as usize)
             .take(first_part_len)
             .collect();
-        let checksummed_bytes = ChecksummedBytes::new(body.into());
+        let checksummed_bytes = Crc64ChecksummedBytes::new(body.into());
         let mut first = Part::new(object_id.clone(), first_offset, checksummed_bytes);
 
         let second_object_id = ObjectId::new("other".to_owned(), ETag::for_tests());
@@ -142,7 +142,7 @@ mod tests {
             .skip(second_offset as u8 as usize)
             .take(second_part_len)
             .collect();
-        let checksummed_bytes = ChecksummedBytes::new(body.into());
+        let checksummed_bytes = Crc64ChecksummedBytes::new(body.into());
         let second = Part::new(second_object_id.clone(), second_offset, checksummed_bytes);
 
         let result = first.extend(&second);
@@ -165,7 +165,7 @@ mod tests {
             .skip(first_offset as u8 as usize)
             .take(first_part_len)
             .collect();
-        let checksummed_bytes = ChecksummedBytes::new(body.into());
+        let checksummed_bytes = Crc64ChecksummedBytes::new(body.into());
         let mut first = Part::new(object_id.clone(), first_offset, checksummed_bytes);
 
         let second_part_len = 512;
@@ -175,7 +175,7 @@ mod tests {
             .skip(second_offset as u8 as usize)
             .take(second_part_len)
             .collect();
-        let checksummed_bytes = ChecksummedBytes::new(body.into());
+        let checksummed_bytes = Crc64ChecksummedBytes::new(body.into());
         let second = Part::new(object_id.clone(), second_offset, checksummed_bytes);
 
         let result = first.extend(&second);

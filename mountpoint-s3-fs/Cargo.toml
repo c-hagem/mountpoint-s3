@@ -22,6 +22,7 @@ bitflags = "2.9.1"
 bytes = { version = "1.10.1", features = ["serde"] }
 clap = { version = "4.5.40", features = ["derive"] }
 const_format = "0.2.34"
+crc-fast = "1.3.0"
 crc32c = "0.6.8"
 csv = { version = "1.3.1", optional = true }
 ctrlc = { version = "3.4.7", features = ["termination"] }

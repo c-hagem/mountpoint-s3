@@ -2,7 +2,7 @@ use async_stream::try_stream;
 use futures::task::SpawnExt;
 use futures::{Stream, StreamExt, pin_mut};
 use mountpoint_s3_client::ObjectClient;
-use mountpoint_s3_client::checksums::crc32c::Crc32c;
+use mountpoint_s3_client::checksums::crc64nvme::Crc64nvme;
 use mountpoint_s3_client::types::{ClientBackpressureHandle, GetBodyPart, GetObjectParams, GetObjectResponse};
 use std::env;
 use std::marker::{Send, Sync};
@@ -12,7 +12,7 @@ use std::{fmt::Debug, ops::Range};
 use tracing::{Instrument, debug_span, error, trace};
 
 use crate::async_util::Runtime;
-use crate::checksums::ChecksummedBytes;
+use crate::checksums_crc64::Crc64ChecksummedBytes;
 use crate::mem_limiter::MemoryLimiter;
 use crate::object::ObjectId;
 
@@ -305,12 +305,12 @@ where
                 // object part boundaries, so we're computing our own checksum here.
                 let checksum_bytes = if env::var("VROOM_VROOM").is_ok() {
                     // Skip checksum computation if VROOM_VROOM is set
-                    let dummy_checksum = Crc32c::new(0);
-                    ChecksummedBytes::new_from_inner_data(chunk, dummy_checksum)
+                    let dummy_checksum = Crc64nvme::new(0);
+                    Crc64ChecksummedBytes::new_from_inner_data(chunk, dummy_checksum)
                 } else {
                     // Measure the time for checksumming and log it at trace level
                     let start = Instant::now();
-                    let result = ChecksummedBytes::new(chunk);
+                    let result = Crc64ChecksummedBytes::new(chunk);
                     let duration = start.elapsed();
                     trace!("Checksumming for part at offset {} took {:?}", curr_offset, duration);
                     result

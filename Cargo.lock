@@ -2938,6 +2938,7 @@ dependencies = [
  "bytes",
  "clap",
  "const_format",
+ "crc-fast",
  "crc32c",
  "criterion",
  "csv",

@@ -1,6 +1,7 @@
 mod async_util;
 pub mod autoconfigure;
 mod checksums;
+mod checksums_crc64;
 mod config;
 pub mod data_cache;
 pub mod fs;

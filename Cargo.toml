@@ -9,5 +9,8 @@ members = [
 ]
 resolver = "2"
 
+[workspace.dependencies]
+crc-fast = "3.1.0"
+
 [profile.release]
 debug = 2

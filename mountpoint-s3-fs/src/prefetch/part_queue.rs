@@ -151,7 +151,7 @@ impl<Client: ObjectClient> Drop for PartQueue<Client> {
 
 #[cfg(test)]
 mod tests {
-    use crate::checksums::ChecksummedBytes;
+    use crate::checksums_crc64::Crc64ChecksummedBytes;
     use crate::mem_limiter::MINIMUM_MEM_LIMIT;
     use crate::object::ObjectId;
 
@@ -212,7 +212,7 @@ mod tests {
                     let offset = current_offset + current_length as u64;
                     let body: Box<[u8]> = (0u8..=255).cycle().skip(offset as u8 as usize).take(n).collect();
                     let bytes: Bytes = body.into();
-                    let checksummed_bytes = ChecksummedBytes::new(bytes);
+                    let checksummed_bytes = Crc64ChecksummedBytes::new(bytes);
                     let part = Part::new(part_id.clone(), offset, checksummed_bytes);
                     part_queue_producer.push(Ok(part));
                     current_length += n;
