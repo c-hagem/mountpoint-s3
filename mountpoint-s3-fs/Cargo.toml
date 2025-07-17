@@ -50,6 +50,7 @@ time = { version = "0.3.41", features = ["macros", "formatting", "serde-well-kno
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-log = "0.2.0"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+rayon = "1.8.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = { version = "0.17.0", default-features = false }

@@ -2,6 +2,7 @@ use std::ops::{Bound, Range, RangeBounds};
 
 use bytes::{Bytes, BytesMut};
 use mountpoint_s3_client::checksums::crc32c::{self, Crc32c};
+use rayon::prelude::*;
 
 use thiserror::Error;
 
@@ -36,6 +37,19 @@ impl ChecksummedBytes {
     pub fn new(bytes: Bytes) -> Self {
         let checksum = crc32c::checksum(&bytes);
         Self::new_from_inner_data(bytes, checksum)
+    }
+
+    /// Create [ChecksummedBytes] from [Bytes], calculating its checksum in parallel.
+    /// Will only use parallel implementation for chunks above a certain threshold.
+    pub fn new_parallel(bytes: Bytes) -> Self {
+        // Only use parallel implementation for larger chunks where it makes sense
+        if bytes.len() >= 1_048_576 {
+            // 1MB threshold
+            let checksum = parallel_crc32c(&bytes);
+            Self::new_from_inner_data(bytes, checksum)
+        } else {
+            Self::new(bytes)
+        }
     }
 
     /// Convert the [ChecksummedBytes] into [Bytes], data integrity will be validated before converting.
@@ -247,6 +261,45 @@ impl TryFrom<ChecksummedBytes> for Bytes {
 pub fn combine_checksums(prefix_crc: Crc32c, suffix_crc: Crc32c, suffix_len: usize) -> Crc32c {
     let combined = ::crc32c::crc32c_combine(prefix_crc.value(), suffix_crc.value(), suffix_len);
     Crc32c::new(combined)
+}
+
+/// Computes a CRC32C checksum in parallel using Rayon for large data chunks.
+///
+/// This function splits the data into chunks and calculates checksums in parallel,
+/// then combines the individual checksums to produce the final result.
+///
+/// # Arguments
+/// * `data` - The byte slice to checksum
+///
+/// # Returns
+/// * `Crc32c` - The CRC32C checksum of the input data
+fn parallel_crc32c(data: &[u8]) -> Crc32c {
+    // For very large chunks, split into multiple segments
+    const CHUNK_SIZE: usize = 1_048_576; // 1MB chunks
+
+    if data.len() <= CHUNK_SIZE {
+        return crc32c::checksum(data);
+    }
+
+    let num_chunks = (data.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
+
+    // Calculate checksums in parallel
+    let checksums: Vec<Crc32c> = (0..num_chunks)
+        .into_par_iter()
+        .map(|i| {
+            let start = i * CHUNK_SIZE;
+            let end = std::cmp::min(start + CHUNK_SIZE, data.len());
+            crc32c::checksum(&data[start..end])
+        })
+        .collect();
+
+    // Combine the checksums
+    let mut final_checksum = checksums[0];
+    for i in 1..checksums.len() {
+        final_checksum = combine_checksums(final_checksum, checksums[i], CHUNK_SIZE);
+    }
+
+    final_checksum
 }
 
 #[derive(Debug, Error)]
@@ -526,6 +579,23 @@ mod tests {
 
         let result = split_off.extend(extend);
         assert!(matches!(result, Err(IntegrityError::ChecksumMismatch(_, _))));
+    }
+
+    #[test]
+    fn test_parallel_crc32c() {
+        // Test with various data sizes to ensure it works correctly
+        for size in [100, 1_000_000, 2_000_000, 5_000_000] {
+            let data = vec![0xAA; size];
+
+            // Calculate checksum with standard method
+            let regular_checksum = crc32c::checksum(&data);
+
+            // Calculate checksum with parallel method
+            let parallel_checksum = parallel_crc32c(&data);
+
+            // They should match exactly
+            assert_eq!(regular_checksum, parallel_checksum);
+        }
     }
 
     #[test]

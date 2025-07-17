@@ -301,7 +301,8 @@ where
                 // S3 doesn't provide checksum for us if the request range is not aligned to
                 // object part boundaries, so we're computing our own checksum here.
                 let start_time = std::time::Instant::now();
-                let checksum_bytes = ChecksummedBytes::new(chunk);
+                // Use parallel checksumming for better performance
+                let checksum_bytes = ChecksummedBytes::new_parallel(chunk);
                 let elapsed = start_time.elapsed();
                 metrics::histogram!("checksum.creation_us").record(elapsed.as_micros() as f64);
                 metrics::counter!("checksum.operations").increment(1);
