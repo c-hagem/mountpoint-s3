@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -13,6 +14,7 @@ use mountpoint_s3_client::types::HeadObjectParams;
 use mountpoint_s3_client::{ObjectClient, S3CrtClient};
 use mountpoint_s3_fs::Runtime;
 use mountpoint_s3_fs::mem_limiter::MemoryLimiter;
+use mountpoint_s3_fs::metrics;
 use mountpoint_s3_fs::object::ObjectId;
 use mountpoint_s3_fs::prefetch::{PrefetchGetObject, Prefetcher, PrefetcherConfig};
 use serde_json::{json, to_writer};
@@ -21,19 +23,45 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::Subscriber;
 use tracing_subscriber::util::SubscriberInitExt;
 
-/// Like `tracing_subscriber::fmt::init` but sends logs to stderr
-fn init_tracing_subscriber() {
+/// Initialize tracing subscriber, optionally redirecting output to a file
+fn init_tracing_subscriber(logfile: Option<&PathBuf>, log_metrics: bool) {
     RustLogAdapter::try_init().expect("should succeed as first and only adapter init call");
 
-    let subscriber = Subscriber::builder()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_ansi(supports_color::on(supports_color::Stream::Stderr).is_some())
-        .with_writer(std::io::stderr)
-        .finish();
+    // Build filter string
+    let mut filter = String::from("warn");
 
-    subscriber
-        .try_init()
-        .expect("should succeed as first and only subscriber init call");
+    // Add metrics logging if enabled
+    if log_metrics {
+        filter.push_str(&format!(",{}=info", metrics::TARGET_NAME));
+    }
+
+    let env_filter = EnvFilter::new(filter);
+
+    if let Some(path) = logfile {
+        // Use a file appender for logs
+        let file = File::create(path).expect("Failed to create log file");
+
+        let subscriber = Subscriber::builder()
+            .with_env_filter(env_filter)
+            .with_ansi(false) // Disable ANSI colors for file output
+            .with_writer(file)
+            .finish();
+
+        subscriber
+            .try_init()
+            .expect("should succeed as first and only subscriber init call");
+    } else {
+        // Write logs to stderr
+        let subscriber = Subscriber::builder()
+            .with_env_filter(env_filter)
+            .with_ansi(supports_color::on(supports_color::Stream::Stderr).is_some())
+            .with_writer(std::io::stderr)
+            .finish();
+
+        subscriber
+            .try_init()
+            .expect("should succeed as first and only subscriber init call");
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -120,6 +148,12 @@ pub struct CliArgs {
 
     #[clap(long, help = "Output file to write the results to", value_name = "OUTPUT_FILE")]
     pub output_file: Option<PathBuf>,
+
+    #[clap(long, help = "File to write logs to instead of stderr", value_name = "LOGFILE")]
+    pub logfile: Option<PathBuf>,
+
+    #[clap(long, help = "Enable logging of performance metrics")]
+    pub log_metrics: bool,
 }
 
 fn create_memory_limiter(args: &CliArgs, client: &S3CrtClient) -> Arc<MemoryLimiter<S3CrtClient>> {
@@ -134,10 +168,13 @@ fn create_memory_limiter(args: &CliArgs, client: &S3CrtClient) -> Arc<MemoryLimi
 }
 
 fn main() -> anyhow::Result<()> {
-    init_tracing_subscriber();
+    let args = CliArgs::parse();
+
+    // Always install metrics, but they'll only be logged if --log-metrics is set
     let _metrics_handle = mountpoint_s3_fs::metrics::install();
 
-    let args = CliArgs::parse();
+    // Initialize tracing after metrics installation
+    init_tracing_subscriber(args.logfile.as_ref(), args.log_metrics);
 
     let bucket = args.bucket.as_str();
     let client = make_s3_client_from_args(&args).context("failed to create S3 CRT client")?;
