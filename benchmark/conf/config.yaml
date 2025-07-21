@@ -10,14 +10,14 @@ application_workers: 1
 iteration: 0
 iterations: 1
 run_time: 30 # Default run time in seconds
+read_size: 262144 # Defaults to 256KiB, can go up to 1MiB.
 read_part_size: !!null
 region: "us-east-1"
 write_part_size: 16777216 # 16 MiB, to allow for uploads of large files
 object_size_in_gib: 100 # Size of the object to benchmark
 benchmark_type: "fio" # fio, prefetch, client, client-bp, crt
-s3_keys: !!null
-read_size: 256 * 1024 # read size in k
-# Network configuration
+s3_keys: !!null # Network configuration
+
 network:
     interface_names: []
     maximum_throughput_gbps:

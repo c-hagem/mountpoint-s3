@@ -54,7 +54,7 @@ class FioBenchmark(BaseBenchmark):
         fio_env["UNIQUE_DIR"] = datetime.now(tz=timezone.utc).isoformat()
         fio_env["IO_ENGINE"] = self.fio_config['fio_io_engine']
         fio_env["RUN_TIME"] = str(self.common_config['run_time'])
-        fio_env["READ_SIZE"] = self.common_config['read_size']
+        fio_env["BLOCK_SIZE"] = str(self.common_config['read_size'])
 
         log.info("Running FIO with args: %s; env: %s", subprocess_args, fio_env)
         subprocess_env = os.environ.copy()
