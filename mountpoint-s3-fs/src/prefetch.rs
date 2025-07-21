@@ -111,6 +111,8 @@ pub struct PrefetcherConfig {
     /// The maximum distance the prefetcher will seek backwards before resetting and starting a new
     /// S3 request. We keep this much data in memory in addition to any inflight requests.
     pub max_backward_seek_distance: u64,
+    /// The preferred part size we will split into
+    pub preferred_part_size: usize,
 }
 
 impl Default for PrefetcherConfig {
@@ -125,6 +127,7 @@ impl Default for PrefetcherConfig {
             // just start a new request instead.
             max_forward_seek_wait_distance: 16 * 1024 * 1024,
             max_backward_seek_distance: 1 * 1024 * 1024,
+            preferred_part_size: determine_preferred_part_size(),
         }
     }
 }
@@ -162,6 +165,41 @@ fn determine_max_read_size() -> usize {
             }
         },
         None => DEFAULT_READ_WINDOW_SIZE,
+    }
+}
+/// Provide the maximum read size for the prefetcher, for which there is one prefetcher per file handle.
+///
+/// This allows a way to override the prefetch window rather than using the hardcoded default within Mountpoint.
+/// We do not recommend using the override, and it may be removed at any time.
+///
+/// This parameter may not be accurately adopted when using small values.
+/// When prefetching starts, it will fetch 1MiB + 128KiB at time of writing.
+/// This parameter will only be used when scaling up the prefetch window.
+///
+/// This unstable override is expected to be removed once adaptive prefetching based on available memory is available:
+/// https://github.com/awslabs/mountpoint-s3/issues/987
+fn determine_preferred_part_size() -> usize {
+    const ENV_VAR_KEY: &str = "UNSTABLE_MOUNTPOINT_PREFERRED_PART_SIZE";
+    const DEFAULT_PART_SIZE: usize = 256 * 1024;
+
+    match std::env::var_os(ENV_VAR_KEY) {
+        Some(val) => match val.to_string_lossy().parse() {
+            Ok(val) => {
+                tracing::warn!(
+                    "successfully overridden prefetch part size \
+                            with new value {val} bytes from unstable environment config",
+                );
+                val
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "{ENV_VAR_KEY} did not contain a valid positive integer \
+                            for prefetch part size, using {DEFAULT_PART_SIZE} bytes instead",
+                );
+                DEFAULT_PART_SIZE
+            }
+        },
+        None => DEFAULT_PART_SIZE,
     }
 }
 
@@ -243,7 +281,7 @@ where
             config,
             backpressure_task: None,
             backward_seek_window: SeekWindow::new(config.max_backward_seek_distance as usize),
-            preferred_part_size: 128 * 1024,
+            preferred_part_size: config.preferred_part_size,
             sequential_read_start_offset: 0,
             next_sequential_read_offset: 0,
             next_request_offset: 0,
@@ -286,8 +324,9 @@ where
         // We initialize this value to 128k as it is the Linux's readahead size
         // and it can also be used as a lower bound in case the read size is too small.
         // The upper bound is 1MiB since it should be a common IO size.
-        let max_preferred_part_size = 1024 * 1024;
-        self.preferred_part_size = self.preferred_part_size.max(length).min(max_preferred_part_size);
+        let max_preferred_part_size = 8 * 1024 * 1024; // Maximum 8MB
+        // Do not use read as hint for prefetch part size, as we are overwriting using environmnet variable
+        //self.preferred_part_size = self.preferred_part_size.max(length).min(max_preferred_part_size);
 
         let remaining = self.size.saturating_sub(offset);
         if remaining == 0 {
