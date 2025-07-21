@@ -11,7 +11,12 @@ s3_bucket: ???
 application_workers: 1
 iteration: 0
 iterations: 1
+<<<<<<< HEAD
 run_time: 30 # Default run time in seconds
+=======
+run_time: 30  # Default run time in seconds
+read_size: 262144 # Defaults to 256KiB, can go up to 1MiB.
+>>>>>>> 1d416eff (Support read sizes up to 1M for fio cached IO benchmarks.  (#1528))
 read_part_size: !!null
 region: "us-east-1"
 write_part_size: 16777216 # 16 MiB, to allow for uploads of large files
