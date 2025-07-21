@@ -113,6 +113,8 @@ def mount_mp(cfg: DictConfig, mount_dir: str) -> Dict[str, Any]:
 
     mp_env["UNSTABLE_MOUNTPOINT_PID_FILE"] = f"{mount_dir}.pid"
 
+    mp_env["UNSTABLE_MOUNTPOINT_PREFERRED_PART_SIZE"] = str(common_config.get("read_size", 256*1024))
+
     if stub_mode != "off" and mp_config["mountpoint_binary"] is not None:
         raise ValueError("Cannot use `stub_mode` with `mountpoint_binary`, `stub_mode` requires recompilation")
 
