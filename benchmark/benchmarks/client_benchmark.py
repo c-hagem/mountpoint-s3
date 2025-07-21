@@ -49,6 +49,10 @@ class ClientBenchmark(BaseBenchmark):
             if (crt_mem_limit_gib := self.common_config.get('crt_mem_limit_gib')) is not None:
                 subprocess_args.extend(["--crt-memory-limit-gb", crt_mem_limit_gib])
 
+            # Add read-size as a parameter
+            read_size = self.common_config['read_size']
+            subprocess_args.extend(["--read-size", str(read_size)])
+
             subprocess_args.extend(["--output-file", "client-output.json"])
             subprocess_args.append("real")
             region = self.common_config['region']

@@ -1,4 +1,4 @@
-bs=256k ; no. of bytes
+bs=${READ_SIZE} ; no. of bytes
 runtime=30s
 time_based
 group_reporting
