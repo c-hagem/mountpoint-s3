@@ -324,7 +324,7 @@ where
         // We initialize this value to 128k as it is the Linux's readahead size
         // and it can also be used as a lower bound in case the read size is too small.
         // The upper bound is 1MiB since it should be a common IO size.
-        let max_preferred_part_size = 8 * 1024 * 1024; // Maximum 8MB
+        let _max_preferred_part_size = 8 * 1024 * 1024; // Maximum 8MB
         // Do not use read as hint for prefetch part size, as we are overwriting using environmnet variable
         //self.preferred_part_size = self.preferred_part_size.max(length).min(max_preferred_part_size);
 
@@ -398,16 +398,9 @@ where
         let range = RequestRange::new(object_size, start, object_size);
 
         // The prefetcher now relies on backpressure mechanism so it must be enabled
-        let initial_read_window_size = match self.part_stream.client().initial_read_window_size() {
-            Some(value) => {
-                // Also, make sure that we don't get blocked from the beginning
-                if value == 0 {
-                    return Err(PrefetchReadError::BackpressurePreconditionFailed);
-                }
-                value
-            }
-            None => return Err(PrefetchReadError::BackpressurePreconditionFailed),
-        };
+        let initial_read_window_size = 2 * 1024 * 1024 * 1024;
+
+        // If MOUNTPOINT_OVERRIDE_INITIAL_READ_WINDOW
 
         let config = RequestTaskConfig {
             bucket: self.bucket.clone(),
@@ -611,6 +604,7 @@ mod tests {
             sequential_prefetch_multiplier: test_config.sequential_prefetch_multiplier,
             max_forward_seek_wait_distance: test_config.max_forward_seek_wait_distance,
             max_backward_seek_distance: test_config.max_backward_seek_distance,
+            preferred_part_size: 256 * 1024,
         };
 
         let prefetcher = build_prefetcher(client.clone(), prefetcher_type, prefetcher_config);
@@ -905,6 +899,7 @@ mod tests {
             sequential_prefetch_multiplier: test_config.sequential_prefetch_multiplier,
             max_forward_seek_wait_distance: test_config.max_forward_seek_wait_distance,
             max_backward_seek_distance: test_config.max_backward_seek_distance,
+            preferred_part_size: 256 * 1024,
         };
 
         let prefetcher = build_prefetcher(client, prefetcher_type, prefetcher_config);
@@ -1277,6 +1272,7 @@ mod tests {
                 sequential_prefetch_multiplier,
                 max_forward_seek_wait_distance,
                 max_backward_seek_distance,
+                preferred_part_size: 256 * 1024,
             };
 
             let prefetcher =
@@ -1337,6 +1333,7 @@ mod tests {
                 sequential_prefetch_multiplier,
                 max_forward_seek_wait_distance,
                 max_backward_seek_distance,
+                preferred_part_size: 256 * 1024,
             };
 
             let prefetcher =
