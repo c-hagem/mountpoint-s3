@@ -3,8 +3,6 @@
 
 defaults:
     - _self_
-    - override hydra/job_logging: colorlog
-    - override hydra/hydra_logging: colorlog
 
 # ===== Common parameters for all benchmarks =====
 s3_bucket: ???
@@ -78,18 +76,20 @@ hydra:
         # Global sweeper params - use this for common parameters across all benchmarks
         # For specific parameter use sweep params under the specific benchmark type config
         params:
-            # Maximum number of FUSE threads for Mountpoint. Passed as `--max-threads` argument.
-            "fuse_threads": [16, 64]
             # Number of processes that will be interacting with the file.
-            "application_workers": [16]
+            "application_workers": "1,4,16,64,128"
             # Configure if application should use Direct IO, skipping the Linux page cache
-            "direct_io": [true, false]
-            "mountpoint_clone_fuse_fd": [false]
+            "direct_io": "true,false"
             # Don't touch the params below, they are based on settings above.
-            "fio_benchmark": "${join:',', ${fio_benchmarks}}"
+            "fio_benchmark": "${join:',', ${benchmarks.fio.fio_benchmarks}}"
             "iteration": "range(${iterations})"
-            "mountpoint.fuse_threads": [1, 16, 64]
-            "mountpoint.mountpoint_jitter": ["off", "on"]
-            "benchmarks.fio.direct_io": [false, true]
+            # Maximum number of FUSE threads for Mountpoint. Passed as `--max-threads` argument.
+            "mountpoint.fuse_threads": "1,16,64"
+            # Configure jitter behavior for read window alignment
+            "mountpoint.mountpoint_jitter": "off,on"
+            # Configure if mountpoint should clone FUSE file descriptor
+            "mountpoint.mountpoint_clone_fuse_fd": "false,true"
+            # Configure if FIO should use Direct IO
+            "benchmarks.fio.direct_io": "false,true"
             # 'benchmarks.prefetch.max_memory_target': !!null, 1073741824, 2147483648  # null, 1GB, 2GB
             #'benchmarks.client_backpressure.read_window_size': 8388608, 2147483648

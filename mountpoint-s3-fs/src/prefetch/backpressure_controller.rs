@@ -136,10 +136,34 @@ impl BackpressureController {
                 while remaining_window < (self.preferred_read_window_size / 2)
                     && self.read_window_end_offset < self.request_end_offset
                 {
-                    let new_read_window_end_offset = self
+                    let mut new_read_window_end_offset = self
                         .next_read_offset
                         .saturating_add(self.preferred_read_window_size as u64)
                         .min(self.request_end_offset);
+
+                    // Add jitter to avoid aligning with read offset if MOUNTPOINT_UNSTABLE_JITTER = on
+                    // if it is off, round up so that next 8MB part is hit (i.e. next_offset % 8MB == 0 should hold)
+                    // Otherwise, panic if the variable is set to other than on, off
+                    const PART_SIZE_8MB: u64 = 8 * 1024 * 1024; // 8MB
+
+                    match env::var("MOUNTPOINT_UNSTABLE_JITTER").as_deref() {
+                        Ok("on") => {
+                            // Add jitter to avoid aligning with read offset
+                            let mut rng = rand::thread_rng();
+                            let jitter = rng.gen_range(1..=PART_SIZE_8MB / 4); // Add up to 2MB jitter
+                            new_read_window_end_offset += jitter;
+                        }
+                        Ok("off") | Err(_) => {
+                            // Round up so that next 8MB part is hit (next_offset % 8MB == 0)
+                            let remainder = new_read_window_end_offset % PART_SIZE_8MB;
+                            if remainder != 0 {
+                                new_read_window_end_offset += PART_SIZE_8MB - remainder;
+                            }
+                        }
+                        Ok(other) => {
+                            panic!("MOUNTPOINT_UNSTABLE_JITTER must be 'on' or 'off', got: {}", other);
+                        }
+                    }
                     // We can skip if the new `read_window_end_offset` is less than or equal to the current one, this
                     // could happen after the read window is scaled down.
                     if new_read_window_end_offset <= self.read_window_end_offset {
@@ -151,14 +175,16 @@ impl BackpressureController {
                     // read window size.
                     if self.preferred_read_window_size <= self.min_read_window_size {
                         self.mem_limiter.reserve(BufferArea::Prefetch, to_increase as u64);
-                        self.increment_read_window(to_increase).await;
+                        self.increment_read_window_to_offset(new_read_window_end_offset, to_increase)
+                            .await;
                         break;
                     }
 
                     // Try to reserve the memory for the length we want to increase before sending the request,
                     // scale down the read window if it fails.
                     if self.mem_limiter.try_reserve(BufferArea::Prefetch, to_increase as u64) {
-                        self.increment_read_window(to_increase).await;
+                        self.increment_read_window_to_offset(new_read_window_end_offset, to_increase)
+                            .await;
                         break;
                     } else {
                         self.scale_down();
@@ -171,37 +197,12 @@ impl BackpressureController {
     }
 
     // Send an increment read window request to the stream producer
-    async fn increment_read_window(&mut self, len: usize) {
+    async fn increment_read_window_to_offset(&mut self, target_offset: u64, len: usize) {
         let prev_window_end_offset = self.read_window_end_offset;
-        let mut next_window_end_offset = prev_window_end_offset + len as u64;
-
-        // Add jitter to avoid aligning with read offset if MOUNTPOINT_UNSTABLE_JITTER = on
-        // if it is off, round up so that next 8MB part is hit (i.e. next_offset % 8MB == 0 should hold)
-        // Otherwise, panic if the variable is set to other than on, off
-        const PART_SIZE_8MB: u64 = 8 * 1024 * 1024; // 8MB
-
-        match env::var("MOUNTPOINT_UNSTABLE_JITTER").as_deref() {
-            Ok("on") => {
-                // Add jitter to avoid aligning with read offset
-                let mut rng = rand::thread_rng();
-                let jitter = rng.gen_range(1..10); // Add up to 2MB jitter
-                next_window_end_offset += jitter;
-            }
-            Ok("off") | Err(_) => {
-                // Round up so that next 8MB part is hit (next_offset % 8MB == 0)
-                let remainder = next_window_end_offset % PART_SIZE_8MB;
-                if remainder != 0 {
-                    next_window_end_offset += PART_SIZE_8MB - remainder;
-                }
-            }
-            Ok(other) => {
-                panic!("MOUNTPOINT_UNSTABLE_JITTER must be 'on' or 'off', got: {other}");
-            }
-        }
 
         trace!(
             next_read_offset = self.next_read_offset,
-            prev_window_end_offset, next_window_end_offset, len, "incrementing read window",
+            prev_window_end_offset, target_offset, len, "incrementing read window",
         );
 
         // This should not block since the channel is unbounded
@@ -210,7 +211,7 @@ impl BackpressureController {
             .send(len)
             .await
             .inspect_err(|_| trace!("read window incrementing queue is already closed"));
-        self.read_window_end_offset = next_window_end_offset;
+        self.read_window_end_offset = target_offset;
     }
 
     /// Scale up preferred read window size with a multiplier configured at initialization.
@@ -442,9 +443,9 @@ mod tests {
             );
 
             // Send more than one increment.
-            backpressure_controller.increment_read_window(7 * MIB).await;
-            backpressure_controller.increment_read_window(8 * MIB).await;
-            backpressure_controller.increment_read_window(8 * MIB).await;
+            backpressure_controller.increment_read_window_to_offset(7 * MIB).await;
+            backpressure_controller.increment_read_window_to_offset(8 * MIB).await;
+            backpressure_controller.increment_read_window_to_offset(8 * MIB).await;
 
             let curr_offset = backpressure_limiter
                 .wait_for_read_window_increment::<MockClientError>(0)
