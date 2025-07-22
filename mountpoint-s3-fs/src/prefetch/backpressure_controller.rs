@@ -1,8 +1,10 @@
+use std::env;
 use std::ops::Range;
 use std::sync::Arc;
 
 use async_channel::{Receiver, RecvError, Sender, unbounded};
 use humansize::make_format;
+use rand::Rng;
 use tracing::trace;
 
 use crate::mem_limiter::{BufferArea, MemoryLimiter};
@@ -171,7 +173,32 @@ impl BackpressureController {
     // Send an increment read window request to the stream producer
     async fn increment_read_window(&mut self, len: usize) {
         let prev_window_end_offset = self.read_window_end_offset;
-        let next_window_end_offset = prev_window_end_offset + len as u64;
+        let mut next_window_end_offset = prev_window_end_offset + len as u64;
+
+        // Add jitter to avoid aligning with read offset if MOUNTPOINT_UNSTABLE_JITTER = on
+        // if it is off, round up so that next 8MB part is hit (i.e. next_offset % 8MB == 0 should hold)
+        // Otherwise, panic if the variable is set to other than on, off
+        const PART_SIZE_8MB: u64 = 8 * 1024 * 1024; // 8MB
+
+        match env::var("MOUNTPOINT_UNSTABLE_JITTER").as_deref() {
+            Ok("on") => {
+                // Add jitter to avoid aligning with read offset
+                let mut rng = rand::thread_rng();
+                let jitter = rng.gen_range(1..10); // Add up to 2MB jitter
+                next_window_end_offset += jitter;
+            }
+            Ok("off") | Err(_) => {
+                // Round up so that next 8MB part is hit (next_offset % 8MB == 0)
+                let remainder = next_window_end_offset % PART_SIZE_8MB;
+                if remainder != 0 {
+                    next_window_end_offset += PART_SIZE_8MB - remainder;
+                }
+            }
+            Ok(other) => {
+                panic!("MOUNTPOINT_UNSTABLE_JITTER must be 'on' or 'off', got: {other}");
+            }
+        }
+
         trace!(
             next_read_offset = self.next_read_offset,
             prev_window_end_offset, next_window_end_offset, len, "incrementing read window",
