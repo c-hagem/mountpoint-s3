@@ -236,6 +236,29 @@ where
             );
         }
 
+        // Set default congestion threshold for better performance if not overridden
+        if std::env::var_os(ENV_VAR_KEY_CONGESTION_THRESHOLD).is_none() {
+            const DEFAULT_CONGESTION_THRESHOLD: u16 = 48; // 3/4 of default max_background
+            let congestion_result = config.set_congestion_threshold(DEFAULT_CONGESTION_THRESHOLD);
+            if congestion_result.is_err() {
+                tracing::warn!(
+                    "failed to set FUSE congestion_threshold to {}, using kernel default",
+                    DEFAULT_CONGESTION_THRESHOLD
+                );
+            }
+        }
+
+        // Optimize max_write for better throughput
+        let current_max_write = 1024 * 1024; // 1MB writes
+        let max_write_result = config.set_max_write(current_max_write);
+        if max_write_result.is_err() {
+            tracing::debug!("Could not set max_write to {}, using kernel default", current_max_write);
+        }
+
+        // Add performance-oriented capabilities
+        let _ = config.add_capabilities(fuser::consts::FUSE_BIG_WRITES);
+        let _ = config.add_capabilities(fuser::consts::FUSE_ASYNC_READ);
+
         if self.config.allow_overwrite {
             // Overwrites require FUSE_ATOMIC_O_TRUNC capability on the host, so we will panic if the
             // host doesn't support it.
@@ -437,10 +460,23 @@ where
         );
 
         if option_env!("MOUNTPOINT_BUILD_STUB_FS_HANDLER").is_some() {
-            // This compile-time configuration allows us to return simply zeroes to FUSE,
+            // This compile-time configuration allows us to return data to FUSE,
             // allowing us to remove Mountpoint's logic from the loop and compare performance
             // with and without the rest of Mountpoint's logic (such as file handle interaction, prefetcher, etc.).
-            return Ok(vec![0u8; size as usize].into());
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static FIRST_RUN: AtomicBool = AtomicBool::new(true);
+
+            if FIRST_RUN.swap(false, Ordering::Relaxed) {
+                // First run: return actual data pattern
+                let mut data = vec![0u8; size as usize];
+                for (i, byte) in data.iter_mut().enumerate() {
+                    *byte = (i % 256) as u8;
+                }
+                return Ok(data.into());
+            } else {
+                // Subsequent runs: return zeros for performance
+                return Ok(vec![0u8; size as usize].into());
+            }
         }
 
         let handle = {

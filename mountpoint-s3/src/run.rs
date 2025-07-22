@@ -6,9 +6,9 @@ use std::time::Duration;
 use std::{env, fs};
 
 use anyhow::{Context as _, anyhow};
+use fuser::BackgroundSession;
 use mountpoint_s3_client::{ObjectClient, S3CrtClient};
 use mountpoint_s3_fs::data_cache::{DataCacheConfig, ManagedCacheDir};
-use mountpoint_s3_fs::fuse::session::FuseSession;
 use mountpoint_s3_fs::logging::init_logging;
 use mountpoint_s3_fs::s3::S3Personality;
 use mountpoint_s3_fs::s3::config::{ClientConfig, S3Path};
@@ -20,7 +20,7 @@ use crate::cli::CliArgs;
 use crate::{build_info, parse_cli_args};
 
 /// Run Mountpoint with the given [CliArgs].
-pub fn run(client_builder: impl ClientBuilder, args: CliArgs) -> anyhow::Result<()> {
+pub async fn run(client_builder: impl ClientBuilder, args: CliArgs) -> anyhow::Result<()> {
     let successful_mount_msg = format!(
         "{} is mounted at {}",
         args.bucket_description()?,
@@ -39,7 +39,7 @@ pub fn run(client_builder: impl ClientBuilder, args: CliArgs) -> anyhow::Result<
 
         println!("{successful_mount_msg}");
 
-        session.join().context("failed to join session")?;
+        tokio::signal::ctrl_c().await?;
     } else {
         // mount file system as a background process
 
@@ -91,7 +91,7 @@ pub fn run(client_builder: impl ClientBuilder, args: CliArgs) -> anyhow::Result<
                         nix::unistd::close(std::io::stdout().as_raw_fd()).context("couldn't close stdout")?;
                         nix::unistd::close(std::io::stderr().as_raw_fd()).context("couldn't close stderr")?;
 
-                        session.join().context("failed to join session")?;
+                        session.join();
                     }
                     Err(e) => {
                         tracing::trace!("FUSE session creation failed, sending message back to parent process");
@@ -165,7 +165,7 @@ pub fn run(client_builder: impl ClientBuilder, args: CliArgs) -> anyhow::Result<
     Ok(())
 }
 
-fn mount(args: CliArgs, client_builder: impl ClientBuilder) -> anyhow::Result<FuseSession> {
+fn mount(args: CliArgs, client_builder: impl ClientBuilder) -> anyhow::Result<BackgroundSession> {
     tracing::info!("mount-s3 {}", build_info::FULL_VERSION);
     tracing::debug!("{:?}", args);
 
@@ -188,15 +188,13 @@ fn mount(args: CliArgs, client_builder: impl ClientBuilder) -> anyhow::Result<Fu
     tracing::debug!(?fuse_session_config, "creating fuse session");
     let mount_point_path = format!("{}", fuse_session_config.mount_point());
 
-    let mut fuse_session = MountpointConfig::new(fuse_session_config, filesystem_config, data_cache_config)
+    let fuse_session = MountpointConfig::new(fuse_session_config, filesystem_config, data_cache_config)
         .create_fuse_session(s3_path, client, runtime)?;
     tracing::info!("successfully mounted {} at {}", bucket_description, mount_point_path);
 
-    if let Some(managed_cache_dir) = managed_cache_dir {
-        fuse_session.run_on_close(Box::new(move || {
-            drop(managed_cache_dir);
-        }));
-    }
+    // Note: BackgroundSession doesn't support run_on_close,
+    // cache cleanup will happen when the process exits
+    let _ = managed_cache_dir;
     Ok(fuse_session)
 }
 

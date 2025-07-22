@@ -96,12 +96,12 @@ where
     Client: ObjectClient + Clone + Send + Sync + 'static,
 {
     #[instrument(level="warn", skip_all, fields(req=req.unique()))]
-    fn init(&self, req: &Request<'_>, config: &mut KernelConfig) -> Result<(), libc::c_int> {
+    fn init(&mut self, req: &Request<'_>, config: &mut KernelConfig) -> Result<(), libc::c_int> {
         block_on(self.fs.init(config).in_current_span())
     }
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), ino=parent, name=?name))]
-    fn lookup(&self, req: &Request<'_>, parent: InodeNo, name: &OsStr, reply: ReplyEntry) {
+    fn lookup(&mut self, req: &Request<'_>, parent: InodeNo, name: &OsStr, reply: ReplyEntry) {
         match block_on(self.fs.lookup(parent, name).in_current_span()) {
             Ok(entry) => reply.entry(&entry.ttl, &entry.attr, entry.generation),
             Err(e) => fuse_error!("lookup", reply, e, self, req),
@@ -109,7 +109,7 @@ where
     }
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), ino=ino, name=field::Empty))]
-    fn getattr(&self, req: &Request<'_>, ino: InodeNo, _fh: Option<u64>, reply: ReplyAttr) {
+    fn getattr(&mut self, req: &Request<'_>, ino: InodeNo, _fh: Option<u64>, reply: ReplyAttr) {
         match block_on(self.fs.getattr(ino).in_current_span()) {
             Ok(attr) => reply.attr(&attr.ttl, &attr.attr),
             Err(e) => fuse_error!("getattr", reply, e, self, req),
@@ -117,12 +117,12 @@ where
     }
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), ino, nlookup, name=field::Empty))]
-    fn forget(&self, req: &Request<'_>, ino: u64, nlookup: u64) {
+    fn forget(&mut self, req: &Request<'_>, ino: u64, nlookup: u64) {
         block_on(self.fs.forget(ino, nlookup));
     }
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), ino=ino, pid=req.pid(), name=field::Empty))]
-    fn open(&self, req: &Request<'_>, ino: InodeNo, flags: i32, reply: ReplyOpen) {
+    fn open(&mut self, req: &Request<'_>, ino: InodeNo, flags: i32, reply: ReplyOpen) {
         match block_on(self.fs.open(ino, flags.into(), req.pid()).in_current_span()) {
             Ok(opened) => reply.opened(opened.fh, opened.flags),
             Err(e) => fuse_error!("open", reply, e, self, req),
@@ -131,7 +131,7 @@ where
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), ino=ino, fh=fh, offset=offset, size=size, name=field::Empty))]
     fn read(
-        &self,
+        &mut self,
         req: &Request<'_>,
         ino: InodeNo,
         fh: u64,
@@ -156,7 +156,7 @@ where
     }
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), ino=parent, name=field::Empty))]
-    fn opendir(&self, req: &Request<'_>, parent: InodeNo, flags: i32, reply: ReplyOpen) {
+    fn opendir(&mut self, req: &Request<'_>, parent: InodeNo, flags: i32, reply: ReplyOpen) {
         match block_on(self.fs.opendir(parent, flags).in_current_span()) {
             Ok(opened) => reply.opened(opened.fh, opened.flags),
             Err(e) => fuse_error!("opendir", reply, e, self, req),
@@ -164,7 +164,7 @@ where
     }
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), ino=parent, fh=fh, offset=offset))]
-    fn readdir(&self, req: &Request<'_>, parent: InodeNo, fh: u64, offset: i64, mut reply: fuser::ReplyDirectory) {
+    fn readdir(&mut self, req: &Request<'_>, parent: InodeNo, fh: u64, offset: i64, mut reply: fuser::ReplyDirectory) {
         struct ReplyDirectory<'a> {
             inner: &'a mut fuser::ReplyDirectory,
             count: &'a mut usize,
@@ -197,7 +197,7 @@ where
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), ino=parent, fh=fh, offset=offset))]
     fn readdirplus(
-        &self,
+        &mut self,
         req: &Request<'_>,
         parent: InodeNo,
         fh: u64,
@@ -242,7 +242,7 @@ where
     }
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), ino=ino, fh=fh, datasync=datasync, name=field::Empty))]
-    fn fsync(&self, req: &Request<'_>, ino: u64, fh: u64, datasync: bool, reply: ReplyEmpty) {
+    fn fsync(&mut self, req: &Request<'_>, ino: u64, fh: u64, datasync: bool, reply: ReplyEmpty) {
         match block_on(self.fs.fsync(ino, fh, datasync).in_current_span()) {
             Ok(()) => reply.ok(),
             Err(e) => fuse_error!("fsync", reply, e, self, req),
@@ -250,7 +250,7 @@ where
     }
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), ino=ino, fh=fh, pid=req.pid(), name=field::Empty))]
-    fn flush(&self, req: &Request<'_>, ino: u64, fh: u64, lock_owner: u64, reply: ReplyEmpty) {
+    fn flush(&mut self, req: &Request<'_>, ino: u64, fh: u64, lock_owner: u64, reply: ReplyEmpty) {
         match block_on(self.fs.flush(ino, fh, lock_owner, req.pid()).in_current_span()) {
             Ok(()) => reply.ok(),
             Err(e) => fuse_error!("flush", reply, e, self, req),
@@ -259,7 +259,7 @@ where
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), ino=ino, fh=fh, name=field::Empty))]
     fn release(
-        &self,
+        &mut self,
         req: &Request<'_>,
         ino: InodeNo,
         fh: u64,
@@ -275,7 +275,7 @@ where
     }
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), ino=ino, fh=fh))]
-    fn releasedir(&self, req: &Request<'_>, ino: u64, fh: u64, flags: i32, reply: ReplyEmpty) {
+    fn releasedir(&mut self, req: &Request<'_>, ino: u64, fh: u64, flags: i32, reply: ReplyEmpty) {
         match block_on(self.fs.releasedir(ino, fh, flags).in_current_span()) {
             Ok(()) => reply.ok(),
             Err(e) => fuse_error!("releasedir", reply, e, self, req),
@@ -284,7 +284,7 @@ where
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), parent=parent, name=?name))]
     fn mknod(
-        &self,
+        &mut self,
         req: &Request<'_>,
         parent: InodeNo,
         name: &OsStr,
@@ -303,7 +303,7 @@ where
     }
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), parent=parent, name=?name))]
-    fn mkdir(&self, req: &Request<'_>, parent: u64, name: &OsStr, mode: u32, umask: u32, reply: ReplyEntry) {
+    fn mkdir(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, mode: u32, umask: u32, reply: ReplyEntry) {
         // mode_t is u32 on Linux but u16 on macOS, so cast it here
         let mode = mode as libc::mode_t;
 
@@ -315,7 +315,7 @@ where
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), ino=ino, fh=fh, offset=offset, length=data.len(), pid=req.pid(), name=field::Empty))]
     fn write(
-        &self,
+        &mut self,
         req: &Request<'_>,
         ino: InodeNo,
         fh: u64,
@@ -341,7 +341,7 @@ where
     }
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), parent=parent, name=?name))]
-    fn rmdir(&self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+    fn rmdir(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         match block_on(self.fs.rmdir(parent, name).in_current_span()) {
             Ok(()) => reply.ok(),
             Err(e) => fuse_error!("rmdir", reply, e, self, req),
@@ -349,7 +349,7 @@ where
     }
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), parent=parent, name=?name))]
-    fn unlink(&self, req: &Request<'_>, parent: InodeNo, name: &OsStr, reply: ReplyEmpty) {
+    fn unlink(&mut self, req: &Request<'_>, parent: InodeNo, name: &OsStr, reply: ReplyEmpty) {
         match block_on(self.fs.unlink(parent, name).in_current_span()) {
             Ok(()) => reply.ok(),
             Err(e) => fuse_error!("unlink", reply, e, self, req),
@@ -358,7 +358,7 @@ where
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), ino=ino, name=field::Empty))]
     fn setattr(
-        &self,
+        &mut self,
         req: &Request<'_>,
         ino: u64,
         _mode: Option<u32>,
@@ -392,19 +392,19 @@ where
     // Everything below here is stubs for unsupported functions so we log them correctly
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), ino=ino))]
-    fn readlink(&self, _req: &Request<'_>, ino: u64, reply: ReplyData) {
+    fn readlink(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyData) {
         fuse_unsupported!("readlink", reply);
     }
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), parent=parent, name=?name, link=?link))]
-    fn symlink(&self, _req: &Request<'_>, parent: u64, name: &OsStr, link: &Path, reply: ReplyEntry) {
+    fn symlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, link: &Path, reply: ReplyEntry) {
         // Userspace expects EPERM for link/symlink if unsupported
         fuse_unsupported!("symlink", reply, libc::EPERM);
     }
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), parent=parent, name=?name, newparent=newparent, newname=?newname))]
     fn rename(
-        &self,
+        &mut self,
         req: &Request<'_>,
         parent: u64,
         name: &OsStr,
@@ -424,19 +424,19 @@ where
     }
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), ino=ino, newparent=newparent, newname=?newname))]
-    fn link(&self, _req: &Request<'_>, ino: u64, newparent: u64, newname: &OsStr, reply: ReplyEntry) {
+    fn link(&mut self, _req: &Request<'_>, ino: u64, newparent: u64, newname: &OsStr, reply: ReplyEntry) {
         // Userspace expects EPERM for link/symlink if unsupported
         fuse_unsupported!("link", reply, libc::EPERM);
     }
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), ino=ino, fh=fh, datasync=datasync))]
-    fn fsyncdir(&self, _req: &Request<'_>, ino: u64, fh: u64, datasync: bool, reply: ReplyEmpty) {
+    fn fsyncdir(&mut self, _req: &Request<'_>, ino: u64, fh: u64, datasync: bool, reply: ReplyEmpty) {
         fuse_unsupported!("fsyncdir", reply);
     }
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), ino=ino, name=?name))]
     fn setxattr(
-        &self,
+        &mut self,
         _req: &Request<'_>,
         ino: u64,
         name: &OsStr,
@@ -449,28 +449,28 @@ where
     }
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), ino=ino, name=?name))]
-    fn getxattr(&self, _req: &Request<'_>, ino: u64, name: &OsStr, _size: u32, reply: ReplyXattr) {
+    fn getxattr(&mut self, _req: &Request<'_>, ino: u64, name: &OsStr, _size: u32, reply: ReplyXattr) {
         fuse_unsupported!("getxattr", reply);
     }
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), ino=ino))]
-    fn listxattr(&self, _req: &Request<'_>, ino: u64, _size: u32, reply: ReplyXattr) {
+    fn listxattr(&mut self, _req: &Request<'_>, ino: u64, _size: u32, reply: ReplyXattr) {
         fuse_unsupported!("listxattr", reply);
     }
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), ino=ino, name=?name))]
-    fn removexattr(&self, _req: &Request<'_>, ino: u64, name: &OsStr, reply: ReplyEmpty) {
+    fn removexattr(&mut self, _req: &Request<'_>, ino: u64, name: &OsStr, reply: ReplyEmpty) {
         fuse_unsupported!("removexattr", reply);
     }
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), ino=ino, mask=mask))]
-    fn access(&self, _req: &Request<'_>, ino: u64, mask: i32, reply: ReplyEmpty) {
+    fn access(&mut self, _req: &Request<'_>, ino: u64, mask: i32, reply: ReplyEmpty) {
         fuse_unsupported!("access", reply);
     }
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), parent=parent, name=?name))]
     fn create(
-        &self,
+        &mut self,
         _req: &Request<'_>,
         parent: u64,
         name: &OsStr,
@@ -484,7 +484,7 @@ where
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), ino=ino, fh=fh, pid=pid))]
     fn getlk(
-        &self,
+        &mut self,
         _req: &Request<'_>,
         ino: u64,
         fh: u64,
@@ -500,7 +500,7 @@ where
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), ino=ino, fh=fh, pid=pid))]
     fn setlk(
-        &self,
+        &mut self,
         _req: &Request<'_>,
         ino: u64,
         fh: u64,
@@ -516,13 +516,13 @@ where
     }
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), ino=ino))]
-    fn bmap(&self, _req: &Request<'_>, ino: u64, _blocksize: u32, _idx: u64, reply: ReplyBmap) {
+    fn bmap(&mut self, _req: &Request<'_>, ino: u64, _blocksize: u32, _idx: u64, reply: ReplyBmap) {
         fuse_unsupported!("bmap", reply);
     }
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), ino=ino, fh=fh, cmd=cmd))]
     fn ioctl(
-        &self,
+        &mut self,
         _req: &Request<'_>,
         ino: u64,
         fh: u64,
@@ -537,7 +537,7 @@ where
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), ino=ino, fh=fh, offset=offset, length=length))]
     fn fallocate(
-        &self,
+        &mut self,
         _req: &Request<'_>,
         ino: u64,
         fh: u64,
@@ -550,13 +550,13 @@ where
     }
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), ino=ino, fh=fh, offset=offset, whence=whence))]
-    fn lseek(&self, _req: &Request<'_>, ino: u64, fh: u64, offset: i64, whence: i32, reply: ReplyLseek) {
+    fn lseek(&mut self, _req: &Request<'_>, ino: u64, fh: u64, offset: i64, whence: i32, reply: ReplyLseek) {
         fuse_unsupported!("lseek", reply);
     }
 
     #[instrument(level="warn", skip_all, fields(req=_req.unique(), ino_in=ino_in, fh_in=fh_in, offset_in=offset_in, ino_out=ino_out, fh_out=fh_out, offset_out=offset_out, len=len))]
     fn copy_file_range(
-        &self,
+        &mut self,
         _req: &Request<'_>,
         ino_in: u64,
         fh_in: u64,
@@ -599,7 +599,7 @@ where
     }
 
     #[instrument(level="warn", skip_all, fields(req=req.unique(), ino=ino))]
-    fn statfs(&self, req: &Request<'_>, ino: u64, reply: ReplyStatfs) {
+    fn statfs(&mut self, req: &Request<'_>, ino: u64, reply: ReplyStatfs) {
         match block_on(self.fs.statfs(ino).in_current_span()) {
             Ok(statfs) => reply.statfs(
                 statfs.total_blocks,

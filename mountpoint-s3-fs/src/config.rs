@@ -4,12 +4,12 @@ use mountpoint_s3_client::ObjectClient;
 
 use crate::data_cache::{DataCacheConfig, DiskDataCache, ExpressDataCache, MultilevelDataCache};
 use crate::fuse::config::FuseSessionConfig;
-use crate::fuse::session::FuseSession;
 use crate::fuse::{ErrorLogger, S3FuseFilesystem};
 use crate::prefetch::{Prefetcher, PrefetcherBuilder};
 use crate::s3::config::S3Path;
 use crate::sync::Arc;
 use crate::{Runtime, S3Filesystem, S3FilesystemConfig};
+use fuser::BackgroundSession;
 
 /// Configuration for a Mountpoint session
 #[derive(Debug)]
@@ -46,7 +46,7 @@ impl MountpointConfig {
         s3_path: S3Path,
         client: Client,
         runtime: Runtime,
-    ) -> anyhow::Result<FuseSession>
+    ) -> anyhow::Result<BackgroundSession>
     where
         Client: ObjectClient + Clone + Send + Sync + 'static,
     {
@@ -62,8 +62,27 @@ impl MountpointConfig {
         );
 
         let fuse_fs = S3FuseFilesystem::new(fs, self.error_logger);
-        let session = FuseSession::new(fuse_fs, self.fuse_session_config)?;
-        ctrlc::set_handler(session.shutdown_fn()).context("failed to set interrupt handler")?;
+
+        let mount_point = match &self.fuse_session_config.mount_point {
+            crate::fuse::config::MountPoint::Directory(path) => path.clone(),
+            #[cfg(target_os = "linux")]
+            crate::fuse::config::MountPoint::FileDescriptor(_) => {
+                return Err(anyhow::anyhow!(
+                    "File descriptor mounting not supported with spawn_mount2"
+                ));
+            }
+        };
+
+        let session = fuser::spawn_mount2(fuse_fs, &mount_point, &self.fuse_session_config.options)
+            .context("Failed to mount filesystem")?;
+
+        // Set up interrupt handler to unmount cleanly
+        //let unmounter = session.unmount_callable();
+        //ctrlc::set_handler(move || {
+        //     let _ = unmounter.unmount();
+        // })
+        // .context("failed to set interrupt handler")?;
+
         Ok(session)
     }
 }

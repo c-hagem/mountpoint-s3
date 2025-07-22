@@ -283,27 +283,12 @@ where
 {
     type Result = io::Result<()>;
 
-    fn run<FB, FA>(&self, mut before: FB, mut after: FA) -> Self::Result
+    fn run<FB, FA>(&self, mut before: FB, mut after: FA) -> io::Result<()>
     where
         FB: FnMut(),
         FA: FnMut(),
     {
-        self.run_with_callbacks(
-            |req| {
-                // Do not scale threads on bursts of forget messages.
-                if req.is_forget() {
-                    return;
-                }
-                before();
-            },
-            |req| {
-                // Do not scale threads on bursts of forget messages.
-                if req.is_forget() {
-                    return;
-                }
-                after();
-            },
-        )
+        self.run(before, after)
     }
 }
 
