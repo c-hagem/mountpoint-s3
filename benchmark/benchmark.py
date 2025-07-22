@@ -4,8 +4,8 @@ import logging
 import os
 import signal
 import subprocess
-from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import List, Optional
+import urllib.request
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -25,39 +25,6 @@ OmegaConf.register_new_resolver(
     "join",
     lambda separator, elements: separator.join(elements),
 )
-
-
-def get_ec2_instance_id() -> Optional[str]:
-    """Get the EC2 instance ID if running on EC2."""
-    if os.getenv("AWS_EC2_METADATA_DISABLED") == "true":
-        return None
-
-    try:
-        token_url = "http://169.254.169.254/latest/api/token"
-        token_request = urllib.request.Request(token_url, method='PUT')
-        token_request.add_header("X-aws-ec2-metadata-token-ttl-seconds", "21600")
-        with urllib.request.urlopen(token_request) as token_response:
-            token = token_response.read().decode()
-
-        metadata_url = "http://169.254.169.254/latest/meta-data/instance-id"
-        metadata_request = urllib.request.Request(metadata_url, headers={"X-aws-ec2-metadata-token": token})
-        with urllib.request.urlopen(metadata_request) as metadata_response:
-            instance_id = metadata_response.read().decode()
-
-        return instance_id
-    except Exception:
-        log.warning("Failed to retrieve EC2 instance ID", exc_info=True)
-        return None
-
-
-def write_metadata(metadata: Dict[str, Any]) -> None:
-    """Write metadata to a file."""
-    try:
-        with open("metadata.json", "w") as f:
-            json.dump(metadata, f, default=str)
-        log.debug("Metadata written to metadata.json")
-    except Exception:
-        log.error("Failed to write metadata", exc_info=True)
 
 
 class ResourceMonitoring:
