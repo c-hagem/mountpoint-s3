@@ -267,33 +267,7 @@ where
             next_seq_offset = self.next_sequential_read_offset,
             "read"
         );
-
-        // Determine if this read is part-size aligned (within same 8MB chunk)
-        // Part-aligned reads stay within a single S3 part and should be more efficient
-        const DEFAULT_PART_SIZE: u64 = 8 * 1024 * 1024; // 8MB
-        let read_end = offset + length as u64;
-        let is_part_aligned = offset / DEFAULT_PART_SIZE == (read_end.saturating_sub(1)) / DEFAULT_PART_SIZE;
-        let alignment_label = if is_part_aligned { "aligned" } else { "unaligned" };
-
-        // Start timing the read operation
-        let start_time = std::time::Instant::now();
         let result = self.try_read(offset, length).await;
-        let duration = start_time.elapsed();
-
-        // Determine success/error status
-        let status_label = if result.is_ok() { "success" } else { "error" };
-
-        // Emit prefetch read metrics:
-        // - read_size_bytes: histogram of read request sizes in bytes
-        // - read_duration_us: histogram of read operation durations in microseconds
-        // Both metrics are labeled with:
-        // - alignment: "aligned" (within single 8MB part) vs "unaligned" (spans multiple parts)
-        // - status: "success" vs "error" to track performance differences between successful and failed reads
-        metrics::histogram!("prefetch.read_size_bytes", "alignment" => alignment_label, "status" => status_label)
-            .record(length as f64);
-        metrics::histogram!("prefetch.read_duration_us", "alignment" => alignment_label, "status" => status_label)
-            .record(duration.as_micros() as f64);
-
         if result.is_err() {
             self.reset_prefetch_to_offset(offset);
         }
@@ -1357,37 +1331,6 @@ mod tests {
         fn random_read_stress() {
             check_random(random_read_stress_helper, 1000);
             check_pct(random_read_stress_helper, 1000, 3);
-        }
-    }
-
-    #[test]
-    fn test_part_alignment_logic() {
-        const DEFAULT_PART_SIZE: u64 = 8 * 1024 * 1024; // 8MB
-
-        // Test cases: (offset, length, expected_aligned)
-        let test_cases = vec![
-            // Aligned reads (within same 8MB chunk)
-            (0, 1024, true),                        // Start of first part
-            (1024, 2048, true),                     // Middle of first part
-            (DEFAULT_PART_SIZE - 1024, 1024, true), // End of first part
-            (DEFAULT_PART_SIZE, 1024, true),        // Start of second part
-            (DEFAULT_PART_SIZE + 1024, 2048, true), // Middle of second part
-            // Unaligned reads (span multiple 8MB chunks)
-            (DEFAULT_PART_SIZE - 512, 1024, false), // Crosses first-second boundary
-            (DEFAULT_PART_SIZE - 1, 2, false),      // Minimal cross-boundary read
-            (0, DEFAULT_PART_SIZE as usize + 1, false), // Large read spanning parts
-            (DEFAULT_PART_SIZE * 2 - 100, 200, false), // Crosses second-third boundary
-        ];
-
-        for (offset, length, expected_aligned) in test_cases {
-            let read_end = offset + length as u64;
-            let is_part_aligned = offset / DEFAULT_PART_SIZE == (read_end.saturating_sub(1)) / DEFAULT_PART_SIZE;
-
-            assert_eq!(
-                is_part_aligned, expected_aligned,
-                "Alignment check failed for offset={}, length={}, expected_aligned={}",
-                offset, length, expected_aligned
-            );
         }
     }
 }

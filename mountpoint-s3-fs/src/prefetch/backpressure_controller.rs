@@ -135,7 +135,7 @@ impl BackpressureController {
                 while remaining_window < (self.preferred_read_window_size / 2)
                     && self.read_window_end_offset < self.request_end_offset
                 {
-                    let new_read_window_end_offset = self
+                    let mut new_read_window_end_offset = self
                         .next_read_offset
                         .saturating_add(self.preferred_read_window_size as u64)
                         .min(self.request_end_offset);
@@ -143,6 +143,15 @@ impl BackpressureController {
                     // could happen after the read window is scaled down.
                     if new_read_window_end_offset <= self.read_window_end_offset {
                         break;
+                    }
+                    // Align with part size boundary here
+                    if new_read_window_end_offset % 8 * 1024 * 1024 != 0 {
+                        // Round it up to next part size chunk
+                        let aligned_end_offset =
+                            ((new_read_window_end_offset / (8 * 1024 * 1024)) + 1) * (8 * 1024 * 1024);
+                        new_read_window_end_offset = aligned_end_offset;
+
+                        trace!(aligned_end_offset, "aligned read window increment to part boundary");
                     }
                     let to_increase = new_read_window_end_offset.saturating_sub(self.read_window_end_offset) as usize;
 
@@ -174,18 +183,26 @@ impl BackpressureController {
         let prev_window_end_offset = self.read_window_end_offset;
         let next_window_end_offset = prev_window_end_offset + len as u64;
 
-        // Check if this increment is aligned with part size (8MB)
+        // Track alignment metrics for prefetcher read window increments.
+        //
+        // S3 parts are typically 8MB chunks, and aligned increments that match part boundaries
+        // can be more efficient for the underlying S3 client operations. We track two types of alignment:
+        // 1. increment_aligned: whether the increment size itself is a multiple of part size
+        // 2. end_offset_aligned: whether the resulting end offset falls on a part boundary
+        //
+        // These metrics help identify when the prefetcher is making sub-optimal increment decisions
+        // that could lead to inefficient S3 request patterns.
         const PART_SIZE: u64 = 8 * 1024 * 1024; // 8MB
         let is_increment_part_aligned = len as u64 % PART_SIZE == 0;
         let is_end_offset_part_aligned = next_window_end_offset % PART_SIZE == 0;
 
-        // Emit histogram for all increment sizes
+        // Emit histogram for all increment sizes with alignment labels
         histogram!("prefetch.backpressure.increment_size_bytes",
                    "increment_aligned" => is_increment_part_aligned.to_string(),
                    "end_offset_aligned" => is_end_offset_part_aligned.to_string())
         .record(len as f64);
 
-        // Emit counter for non-aligned increments
+        // Emit counter specifically for non-aligned increments to highlight potential inefficiencies
         if !is_increment_part_aligned || !is_end_offset_part_aligned {
             counter!("prefetch.backpressure.unaligned_increment",
                      "increment_aligned" => is_increment_part_aligned.to_string(),
@@ -457,6 +474,44 @@ mod tests {
                 "expected offset did not match offset reported by limiter",
             );
         });
+    }
+
+    #[test]
+    fn test_increment_alignment_detection() {
+        const PART_SIZE: u64 = 8 * 1024 * 1024; // 8MB
+
+        // Test cases: (increment_size, expected_increment_aligned, expected_end_offset_aligned)
+        let test_cases = vec![
+            // Aligned increments
+            (PART_SIZE as usize, true, true),       // Exactly one part
+            (PART_SIZE as usize * 2, true, true),   // Exactly two parts
+            (PART_SIZE as usize / 2, false, false), // Half part
+            // Unaligned increments
+            (PART_SIZE as usize + 1024, false, false), // Part + 1KB
+            (PART_SIZE as usize - 1024, false, false), // Part - 1KB
+            (1024, false, false),                      // 1KB
+            (256 * 1024, false, false),                // 256KB
+        ];
+
+        for (increment_size, expected_increment_aligned, expected_end_offset_aligned) in test_cases {
+            let read_window_end_offset = 0u64; // Start at beginning
+            let next_window_end_offset = read_window_end_offset + increment_size as u64;
+
+            let is_increment_part_aligned = increment_size as u64 % PART_SIZE == 0;
+            let is_end_offset_part_aligned = next_window_end_offset % PART_SIZE == 0;
+
+            assert_eq!(
+                is_increment_part_aligned, expected_increment_aligned,
+                "Increment alignment check failed for size={}, expected={}",
+                increment_size, expected_increment_aligned
+            );
+
+            assert_eq!(
+                is_end_offset_part_aligned, expected_end_offset_aligned,
+                "End offset alignment check failed for size={}, end_offset={}, expected={}",
+                increment_size, next_window_end_offset, expected_end_offset_aligned
+            );
+        }
     }
 
     fn new_backpressure_controller_for_test(
