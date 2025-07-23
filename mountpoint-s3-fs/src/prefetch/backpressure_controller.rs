@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use async_channel::{Receiver, RecvError, Sender, unbounded};
 use humansize::make_format;
+use metrics::{counter, histogram};
 use tracing::trace;
 
 use crate::mem_limiter::{BufferArea, MemoryLimiter};
@@ -172,12 +173,34 @@ impl BackpressureController {
     async fn increment_read_window(&mut self, len: usize) {
         let prev_window_end_offset = self.read_window_end_offset;
         let next_window_end_offset = prev_window_end_offset + len as u64;
+
+        // Check if this increment is aligned with part size (8MB)
+        const PART_SIZE: u64 = 8 * 1024 * 1024; // 8MB
+        let is_increment_part_aligned = len as u64 % PART_SIZE == 0;
+        let is_end_offset_part_aligned = next_window_end_offset % PART_SIZE == 0;
+
+        // Emit histogram for all increment sizes
+        histogram!("prefetch.backpressure.increment_size_bytes",
+                   "increment_aligned" => is_increment_part_aligned.to_string(),
+                   "end_offset_aligned" => is_end_offset_part_aligned.to_string())
+        .record(len as f64);
+
+        // Emit counter for non-aligned increments
+        if !is_increment_part_aligned || !is_end_offset_part_aligned {
+            counter!("prefetch.backpressure.unaligned_increment",
+                     "increment_aligned" => is_increment_part_aligned.to_string(),
+                     "end_offset_aligned" => is_end_offset_part_aligned.to_string())
+            .increment(1);
+        }
+
         trace!(
             controller_addr = format!("{:p}", self),
             next_read_offset = self.next_read_offset,
             prev_window_end_offset,
             next_window_end_offset,
             len,
+            is_increment_part_aligned,
+            is_end_offset_part_aligned,
             "incrementing read window",
         );
 
