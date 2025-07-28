@@ -17,6 +17,7 @@ class ClientBenchmark(BaseBenchmark):
         self.config_parser = BenchmarkConfigParser(cfg)
         self.common_config = self.config_parser.get_common_config()
         self.client_config = self.config_parser.get_client_config()
+        self.mountpoint_config = self.config_parser.get_mountpoint_config()
 
     def setup(self) -> Dict[str, Any]:
         return self.metadata
@@ -49,26 +50,47 @@ class ClientBenchmark(BaseBenchmark):
             subprocess_args.extend(["--crt-memory-limit-gb", crt_mem_limit_gib])
 
         subprocess_args.extend(["--output-file", "client-output.json"])
-        subprocess_args.append("real")
-        region = self.common_config['region']
-        subprocess_args.extend(["--region", region])
 
-        for interface in self.common_config['network_interfaces']:
-            subprocess_args.extend(["--bind", interface])
+        # Check if we should use mock client for stubbing
+        if self.mountpoint_config.get('stub_mode') == 's3_client':
+            subprocess_args.append("mock")
+            # For mock client, we need to specify object size
+            object_size_in_gib = self.common_config['object_size_in_gib']
+            object_size_bytes = object_size_in_gib * 1024 * 1024 * 1024
+            subprocess_args.append(str(object_size_bytes))
 
-        subprocess_args.append(self.common_config['s3_bucket'])
+            # Generate object keys for mock client
+            objects = self.common_config['s3_keys']
+            app_workers = self.common_config['application_workers']
+            if not objects:
+                objects = self.config_parser.default_object_keys(app_workers, object_size_in_gib)
 
-        objects = self.common_config['s3_keys']
-        app_workers = self.common_config['application_workers']
-        object_size_in_gib = self.common_config['object_size_in_gib']
-        if not objects:
-            objects = self.config_parser.default_object_keys(app_workers, object_size_in_gib)
-
-        if len(objects) >= app_workers:
-            for obj in objects:
-                subprocess_args.append(obj)
+            if len(objects) >= app_workers:
+                for obj in objects:
+                    subprocess_args.append(obj)
+            else:
+                raise ValueError("Seeing fewer objects than app workers. So cannot proceed with the run.")
         else:
-            raise ValueError("Seeing fewer objects than app workers. So cannot proceed with the run.")
+            subprocess_args.append("real")
+            region = self.common_config['region']
+            subprocess_args.extend(["--region", region])
+
+            for interface in self.common_config['network_interfaces']:
+                subprocess_args.extend(["--bind", interface])
+
+            subprocess_args.append(self.common_config['s3_bucket'])
+
+            objects = self.common_config['s3_keys']
+            app_workers = self.common_config['application_workers']
+            object_size_in_gib = self.common_config['object_size_in_gib']
+            if not objects:
+                objects = self.config_parser.default_object_keys(app_workers, object_size_in_gib)
+
+            if len(objects) >= app_workers:
+                for obj in objects:
+                    subprocess_args.append(obj)
+            else:
+                raise ValueError("Seeing fewer objects than app workers. So cannot proceed with the run.")
 
         log.info("Running client benchmark with args: %s", subprocess_args)
         subprocess.run(subprocess_args, check=True, capture_output=True, text=True)

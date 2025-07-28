@@ -18,10 +18,10 @@ object_size_in_gib: 100 # Size of the object to benchmark
 benchmark_type: "fio" # fio, prefetch, client, client-bp, crt
 s3_keys: !!null # Network configuration
 
+
 network:
     interface_names: []
-    maximum_throughput_gbps:
-        !!null # Monitoring options (common to all benchmarks)
+    maximum_throughput_gbps: 400
 
 monitoring:
     with_bwm: false
@@ -36,9 +36,10 @@ mountpoint:
     mountpoint_congestion_threshold: !!null
     mountpoint_binary: !!null
     upload_checksums: !!null
-    stub_mode: "off" # Options: "off", "fs_handler", "s3_client"
+    stub_mode: "s3_client" # Options: "off", "fs_handler", "s3_client"
     mountpoint_debug: false
     mountpoint_debug_crt: false
+    use_download_checksums: true
 
 # ===== Benchmark-specific configurations =====
 benchmarks:
@@ -60,8 +61,7 @@ benchmarks:
         # None
 
     client_backpressure:
-        read_window_size: !!null #2147483648
-
+        read_window_size: 2147483648
 
 hydra:
     help:
@@ -73,9 +73,11 @@ hydra:
         # Global sweeper params - use this for common parameters across all benchmarks
         # For specific parameter use sweep params under the specific benchmark type config
         params:
-            "application_workers": 1, 4, 16, 64, 128
+            "application_workers": 16
             "iteration": "range(${iterations})"
-            "mountpoint.fuse_threads": 1, 16, 64
-            "benchmarks.fio.direct_io": false, true
+            "mountpoint.fuse_threads": 16, 64
+            "benchmarks.fio.direct_io": true
+            "mountpoint.use_download_checksums": true, false
+            "benchmark_type": client, prefetch, fio, client-bp
             # 'benchmarks.prefetch.max_memory_target': !!null, 1073741824, 2147483648  # null, 1GB, 2GB
             #'benchmarks.client_backpressure.read_window_size': 8388608, 2147483648

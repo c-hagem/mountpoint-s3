@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use clap::{Parser, Subcommand};
 use futures::StreamExt;
 use mountpoint_s3_client::config::{EndpointConfig, S3ClientConfig};
+use mountpoint_s3_client::mock_client::MockClient;
 use mountpoint_s3_client::mock_client::throughput_client::ThroughputMockClient;
-use mountpoint_s3_client::mock_client::{MockClient, MockObject};
 use mountpoint_s3_client::types::{ClientBackpressureHandle, ETag, GetObjectParams, GetObjectResponse};
 use mountpoint_s3_client::{ObjectClient, S3CrtClient};
 use mountpoint_s3_crt::common::rust_log_adapter::RustLogAdapter;
@@ -17,6 +17,10 @@ use serde_json::{json, to_writer};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::Subscriber;
 use tracing_subscriber::util::SubscriberInitExt;
+
+// Add PagedPool import for mock client
+#[cfg(feature = "mock")]
+use mountpoint_s3_fs::memory::PagedPool;
 
 const SECONDS_PER_DAY: u64 = 86400;
 
@@ -182,6 +186,12 @@ enum Client {
     Mock {
         #[arg(help = "Mock object size")]
         object_size: u64,
+        #[arg(
+            help = "Comma-separated list of key names",
+            value_delimiter = ',',
+            value_name = "KEYS"
+        )]
+        keys: Vec<String>,
     },
 }
 
@@ -279,25 +289,29 @@ fn main() {
                 args.max_duration,
             );
         }
-        Client::Mock { object_size } => {
+        Client::Mock { object_size, ref keys } => {
             const BUCKET: &str = "bucket";
-            const KEY: &str = "key";
-            let keys = &[KEY];
+            let key_refs: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
 
+            // Create PagedPool for mock client
+            let pool = PagedPool::new_with_candidate_sizes([args.part_size]);
             let config = MockClient::config()
                 .bucket(BUCKET)
                 .part_size(args.part_size)
-                .unordered_list_seed(None);
+                .unordered_list_seed(None)
+                .memory_pool(pool);
             let client = ThroughputMockClient::new(config, args.throughput_target_gbps);
             let client = Arc::new(client);
 
-            client.add_object(KEY, MockObject::ramp(0xaa, object_size as usize, ETag::for_tests()));
+            for key in keys {
+                client.add_ramp_object(key, 0xaa, object_size as usize, ETag::for_tests());
+            }
 
             run_benchmark(
                 client,
                 args.iterations,
                 BUCKET,
-                keys,
+                &key_refs,
                 args.enable_backpressure,
                 args.output_file.as_deref(),
                 args.max_duration,

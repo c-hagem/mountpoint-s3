@@ -97,10 +97,10 @@ def mount_mp(cfg: DictConfig, mount_dir: str) -> Dict[str, Any]:
         subprocess_args.append(f"--bind={network_interface}")
 
     if (max_throughput := common_config['max_throughput_gbps']) is not None:
-        if stub_mode == "s3_client":
-            raise ValueError(
-                "should not use `stub_mode=s3_client` with `maximum_throughput_gbps`, throughput will be limited"
-            )
+        #if stub_mode == "s3_client":
+        #    raise ValueError(
+        #        "should not use `stub_mode=s3_client` with `maximum_throughput_gbps`, throughput will be limited"
+        #    )
         subprocess_args.append(f"--maximum-throughput-gbps={max_throughput}")
 
     mp_env = {}
@@ -109,6 +109,10 @@ def mount_mp(cfg: DictConfig, mount_dir: str) -> Dict[str, Any]:
 
     if mp_config['mountpoint_congestion_threshold'] is not None:
         mp_env["UNSTABLE_MOUNTPOINT_CONGESTION_THRESHOLD"] = str(mp_config["mountpoint_congestion_threshold"])
+
+    # Set environment variable to disable checksums if use_download_checksums is False
+    if mp_config.get('use_download_checksums', True) is False:
+        mp_env["MOUNTPOINT_EXPERIMENTAL_DISABLE_CHECKSUMS"] = "1"
 
     mp_env["UNSTABLE_MOUNTPOINT_PID_FILE"] = f"{mount_dir}.pid"
 

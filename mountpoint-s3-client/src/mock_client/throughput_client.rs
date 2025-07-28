@@ -12,6 +12,7 @@ use crate::mock_client::leaky_bucket::LeakyBucket;
 use crate::mock_client::{
     MockClient, MockClientConfig, MockClientError, MockGetObjectResponse, MockObject, MockPutObjectRequest,
 };
+use crate::object_client::ETag;
 use crate::object_client::{
     Checksum, CopyObjectError, CopyObjectParams, CopyObjectResult, DeleteObjectError, DeleteObjectResult, GetBodyPart,
     GetObjectAttributesError, GetObjectAttributesResult, GetObjectError, GetObjectParams, GetObjectResponse,
@@ -71,6 +72,11 @@ impl ThroughputMockClient {
     /// Add an object to this mock client's bucket
     pub fn add_object(&self, key: &str, value: MockObject) {
         self.inner.add_object(key, value);
+    }
+
+    /// Add a ramp object to this mock client's bucket using the client's configured memory pool
+    pub fn add_ramp_object(&self, key: &str, seed: u8, size: usize, etag: ETag) {
+        self.inner.add_ramp_object(key, seed, size, etag);
     }
 }
 
