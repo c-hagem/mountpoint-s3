@@ -368,6 +368,7 @@ async fn wait_for_download<T: ObjectClient + Clone + Send + Sync>(
     let mut total_bytes_read = 0;
     while offset < size && Instant::now() < timeout {
         let bytes = request.read(offset, read_size as usize).await?;
+        assert!(bytes.validate().is_ok(), "Bytes did not validate");
         let bytes_read = bytes.len() as u64;
         debug!("Got {bytes_read}");
         offset += bytes_read;
