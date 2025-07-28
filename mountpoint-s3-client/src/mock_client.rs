@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime};
 
@@ -37,37 +37,19 @@ use crate::object_client::{
     PutObjectTrailingChecksums, RenameObjectError, RenameObjectParams, RenameObjectResult, RenamePreconditionTypes,
     RestoreStatus, UploadChecksum, UploadReview, UploadReviewPart,
 };
-use bytes::Bytes;
 
 mod leaky_bucket;
 pub mod throughput_client;
 
 // Dyn-compatible wrapper trait for MemoryPool
-trait MockMemoryPool: Send + Sync + std::fmt::Debug {
-    fn get_buffer(&self, size: usize) -> Vec<u8>;
-    fn trim(&self) -> bool;
+pub trait MockMemoryPool: Send + Sync + std::fmt::Debug {
+    fn get_buffer(&self, size: usize, meta_request_type: MetaRequestType) -> Box<[u8]>;
 }
 
-// Wrapper implementation for any MemoryPool
-#[derive(Debug)]
-struct MemoryPoolWrapper<P: MemoryPool + std::fmt::Debug> {
-    pool: P,
-}
-
-impl<P: MemoryPool + std::fmt::Debug> MemoryPoolWrapper<P> {
-    fn new(pool: P) -> Self {
-        Self { pool }
-    }
-}
-
-impl<P: MemoryPool + std::fmt::Debug> MockMemoryPool for MemoryPoolWrapper<P> {
-    fn get_buffer(&self, size: usize) -> Vec<u8> {
-        let mut buffer = self.pool.get_buffer(size, MetaRequestType::Default);
-        buffer.as_mut().to_vec()
-    }
-
-    fn trim(&self) -> bool {
-        self.pool.trim()
+impl<T: MemoryPool + std::fmt::Debug> MockMemoryPool for T {
+    fn get_buffer(&self, size: usize, meta_request_type: MetaRequestType) -> Box<[u8]> {
+        let mut buffer = self.get_buffer(size, meta_request_type);
+        buffer.as_mut().to_vec().into_boxed_slice()
     }
 }
 
@@ -98,7 +80,7 @@ pub struct MockClientConfig {
     enable_backpressure: bool,
     initial_read_window_size: usize,
     enable_rename: bool,
-    buffer_pool: Option<Arc<Mutex<Box<dyn MockMemoryPool>>>>,
+    memory_pool: Option<Arc<dyn MockMemoryPool>>,
 }
 
 impl MockClientConfig {
@@ -139,8 +121,8 @@ impl MockClientConfig {
     }
 
     #[must_use = "S3ClientConfig follows a builder pattern"]
-    pub fn memory_pool(mut self, pool: impl MemoryPool + std::fmt::Debug + 'static) -> Self {
-        self.buffer_pool = Some(Arc::new(Mutex::new(Box::new(MemoryPoolWrapper::new(pool)))));
+    pub fn memory_pool(mut self, pool: impl MemoryPool + 'static + std::fmt::Debug) -> Self {
+        self.memory_pool = Some(Arc::new(pool) as Arc<dyn MockMemoryPool>);
         self
     }
 
@@ -158,7 +140,6 @@ pub struct MockClient {
     objects: Arc<RwLock<BTreeMap<String, MockObject>>>,
     in_progress_uploads: Arc<RwLock<BTreeSet<String>>>,
     operation_counts: Arc<RwLock<HashMap<Operation, u64>>>,
-    buffer_pool: Option<Arc<Mutex<Box<dyn MockMemoryPool>>>>,
 }
 
 fn add_object(objects: &Arc<RwLock<BTreeMap<String, MockObject>>>, key: &str, value: MockObject) {
@@ -168,13 +149,11 @@ fn add_object(objects: &Arc<RwLock<BTreeMap<String, MockObject>>>, key: &str, va
 impl MockClient {
     /// Create a new [MockClient] with the given config
     pub fn new(config: MockClientConfig) -> Self {
-        let buffer_pool = config.buffer_pool.clone();
         Self {
             config,
             objects: Default::default(),
             in_progress_uploads: Default::default(),
             operation_counts: Default::default(),
-            buffer_pool,
         }
     }
 
@@ -186,6 +165,17 @@ impl MockClient {
     /// Add an object to this mock client's bucket
     pub fn add_object(&self, key: &str, value: MockObject) {
         add_object(&self.objects, key, value);
+    }
+
+    /// Create a ramp object using the client's configured memory pool
+    pub fn create_ramp_object(&self, seed: u8, size: usize, etag: ETag) -> MockObject {
+        MockObject::ramp_with_pool(seed, size, etag, self.config.memory_pool.clone())
+    }
+
+    /// Add a ramp object to this mock client's bucket using the client's configured memory pool
+    pub fn add_ramp_object(&self, key: &str, seed: u8, size: usize, etag: ETag) {
+        let object = self.create_ramp_object(seed, size, etag);
+        self.add_object(key, object);
     }
 
     /// Remove object for the mock client's bucket
@@ -615,17 +605,37 @@ impl MockObject {
     }
 
     pub fn ramp(seed: u8, size: usize, etag: ETag) -> Self {
+        Self::ramp_with_pool(seed, size, etag, None)
+    }
+
+    pub fn ramp_with_pool(seed: u8, size: usize, etag: ETag, memory_pool: Option<Arc<dyn MockMemoryPool>>) -> Self {
+        let pool = memory_pool.clone();
         Self {
             generator: Arc::new(move |offset, mut size| {
                 // Byte at offset k is (seed + k) % RAMP_MODULUS
-                let mut vec = Vec::with_capacity(size);
-                let offs = (offset as usize + seed as usize) % RAMP_MODULUS;
-                while size > 0 {
-                    let nbyte = size.min(RAMP_BUFFER_SIZE);
-                    vec.extend_from_slice(&RAMP_BYTES[offs..offs + nbyte]);
-                    size -= nbyte;
+                if let Some(ref pool) = pool {
+                    // Use memory pool to allocate buffer
+                    let mut buffer = pool.get_buffer(size, MetaRequestType::Default);
+                    let offs = (offset as usize + seed as usize) % RAMP_MODULUS;
+                    let mut pos = 0;
+                    while size > 0 {
+                        let nbyte = size.min(RAMP_BUFFER_SIZE);
+                        buffer[pos..pos + nbyte].copy_from_slice(&RAMP_BYTES[offs..offs + nbyte]);
+                        pos += nbyte;
+                        size -= nbyte;
+                    }
+                    buffer
+                } else {
+                    // Fallback to regular allocation
+                    let mut vec = Vec::with_capacity(size);
+                    let offs = (offset as usize + seed as usize) % RAMP_MODULUS;
+                    while size > 0 {
+                        let nbyte = size.min(RAMP_BUFFER_SIZE);
+                        vec.extend_from_slice(&RAMP_BYTES[offs..offs + nbyte]);
+                        size -= nbyte;
+                    }
+                    vec.into_boxed_slice()
                 }
-                vec.into_boxed_slice()
             }),
             size,
             storage_class: None,
@@ -785,7 +795,6 @@ pub struct MockGetObjectResponse {
     length: usize,
     part_size: usize,
     backpressure_handle: Option<MockBackpressureHandle>,
-    buffer_pool: Option<Arc<Mutex<Box<dyn MockMemoryPool>>>>,
 }
 
 impl MockGetObjectResponse {
@@ -842,17 +851,10 @@ impl Stream for MockGetObjectResponse {
         let next_part = self.object.read(self.next_offset, next_read_size);
 
         // Use the buffer pool to allocate memory here, if configured
-        let data = if let Some(buffer_pool) = &self.buffer_pool {
-            let mut buffer = buffer_pool.lock().unwrap().get_buffer(next_read_size);
-            buffer.copy_from_slice(&next_part);
-            Bytes::from(buffer)
-        } else {
-            next_part.into()
-        };
 
         let result = GetBodyPart {
             offset: self.next_offset,
-            data,
+            data: next_part.into(),
         };
         self.next_offset += next_read_size as u64;
         self.length -= next_read_size;
@@ -993,7 +995,6 @@ impl ObjectClient for MockClient {
                 length,
                 part_size: self.config.part_size,
                 backpressure_handle,
-                buffer_pool: self.buffer_pool.clone(),
             })
         } else {
             Err(ObjectClientError::ServiceError(GetObjectError::NoSuchKey(

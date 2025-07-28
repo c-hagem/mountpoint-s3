@@ -10,7 +10,7 @@ use clap::{Parser, value_parser};
 use futures::executor::ThreadPool;
 use futures::executor::block_on;
 use mountpoint_s3_client::config::{EndpointConfig, RustLogAdapter, S3ClientConfig};
-use mountpoint_s3_client::mock_client::{MockClient, MockObject};
+use mountpoint_s3_client::mock_client::MockClient;
 use mountpoint_s3_client::types::{ETag, HeadObjectParams};
 use mountpoint_s3_client::{ObjectClient, S3CrtClient};
 use mountpoint_s3_fs::Runtime;
@@ -187,7 +187,7 @@ fn run_mock_benchmark(bucket: &str, args: &CliArgs) -> anyhow::Result<()> {
     let mock_object_size = 1024 * 1024 * 1024 * 1024; // 100GiB
 
     // Initialise a PagedPool with part size
-    let paged_pool = mountpoint_s3_fs::memory::PagedPool::new();
+    let pool = PagedPool::new_with_candidate_sizes([args.part_size.unwrap_or(8 * 1024 * 1024) as usize]);
 
     let mut config = MockClient::config()
         .bucket(bucket)
@@ -195,7 +195,7 @@ fn run_mock_benchmark(bucket: &str, args: &CliArgs) -> anyhow::Result<()> {
         .enable_backpressure(true)
         .part_size(args.part_size.unwrap_or(8 * 1024 * 1024) as usize)
         .initial_read_window_size(mountpoint_s3_fs::s3::config::INITIAL_READ_WINDOW_SIZE)
-        .memory_pool(paged_pool);
+        .memory_pool(pool.clone());
 
     // Configure part size to match real client behavior
     if let Some(part_size) = args.part_size {
@@ -206,14 +206,12 @@ fn run_mock_benchmark(bucket: &str, args: &CliArgs) -> anyhow::Result<()> {
     // Add mock objects for each key
     let mut object_metadata = Vec::new();
     for key in &args.s3_keys {
-        client.add_object(key, MockObject::ramp(0xaa, mock_object_size, ETag::for_tests()));
+        client.add_ramp_object(key, 0xaa, mock_object_size, ETag::for_tests());
         object_metadata.push((
             ObjectId::new(key.to_string(), ETag::for_tests()),
             mock_object_size as u64,
         ));
     }
-    let pool = PagedPool::new_with_candidate_sizes([args.part_size.unwrap_or(8 * 1024 * 1024) as usize]);
-
     // For mock client, we need to create a simple runtime since ThroughputMockClient doesn't have event_loop_group
     let mem_limiter = Arc::new(MemoryLimiter::new(pool, args.memory_target_in_bytes()));
     let runtime = Runtime::new(ThreadPool::builder().name_prefix("runtime").create()?);

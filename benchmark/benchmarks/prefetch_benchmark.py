@@ -1,4 +1,5 @@
 import logging
+import os
 import subprocess
 from typing import Dict, Any
 
@@ -15,6 +16,7 @@ class PrefetchBenchmark(BaseBenchmark):
         self.config_parser = BenchmarkConfigParser(cfg)
         self.common_config = self.config_parser.get_common_config()
         self.prefetch_config = self.config_parser.get_prefetch_config()
+        self.mountpoint_config = self.config_parser.get_mountpoint_config()
 
     def setup(self) -> None:
         pass
@@ -60,7 +62,7 @@ class PrefetchBenchmark(BaseBenchmark):
         read_size = self.common_config['read_size']
         subprocess_args.extend(["--read-size", str(read_size)])
 
-        if self.prefetch_config.get('mock_client', False):
+        if self.prefetch_config.get('mock_client', False) or self.mountpoint_config.get('stub_mode') == 's3_client':
             subprocess_args.append("--mock-client")
 
         for interface in self.common_config['network_interfaces']:
@@ -72,7 +74,13 @@ class PrefetchBenchmark(BaseBenchmark):
         subprocess_args.extend(["--output-file", "prefetch-output.json"])
 
         log.info("Running prefetch benchmark with args: %s", subprocess_args)
-        subprocess.run(subprocess_args, check=True, capture_output=True, text=True)
+
+        # Set up environment variables
+        env = os.environ.copy()
+        if self.mountpoint_config.get('use_download_checksums', True) is False:
+            env["MOUNTPOINT_EXPERIMENTAL_DISABLE_CHECKSUMS"] = "1"
+
+        subprocess.run(subprocess_args, check=True, capture_output=True, text=True, env=env)
         log.info("Prefetch benchmark completed successfully.")
 
     def post_process(self) -> None:

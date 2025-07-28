@@ -5,6 +5,11 @@ use mountpoint_s3_client::checksums::crc32c::{self, Crc32c};
 
 use thiserror::Error;
 
+/// Check if checksums are disabled via environment variable
+fn checksums_disabled() -> bool {
+    std::env::var("MOUNTPOINT_EXPERIMENTAL_DISABLE_CHECKSUMS").is_ok()
+}
+
 /// A `ChecksummedBytes` is a bytes buffer that carries its checksum.
 /// The implementation guarantees that integrity will be validated before the data can be accessed.
 /// Data transformations will either fail returning an [IntegrityError], or propagate the checksum
@@ -34,7 +39,16 @@ impl ChecksummedBytes {
 
     /// Create [ChecksummedBytes] from [Bytes], calculating its checksum.
     pub fn new(bytes: Bytes) -> Self {
-        let checksum = crc32c::checksum(&bytes);
+        if checksums_disabled() {
+            Self::new_with_dummy_checksum(bytes)
+        } else {
+            let checksum = crc32c::checksum(&bytes);
+            Self::new_from_inner_data(bytes, checksum)
+        }
+    }
+
+    pub fn new_with_dummy_checksum(bytes: Bytes) -> Self {
+        let checksum = Crc32c::new(0);
         Self::new_from_inner_data(bytes, checksum)
     }
 
@@ -193,6 +207,9 @@ impl ChecksummedBytes {
     ///
     /// Return [IntegrityError] on data corruption.
     pub fn validate(&self) -> Result<(), IntegrityError> {
+        if checksums_disabled() {
+            return Ok(());
+        }
         let checksum = crc32c::checksum(&self.buffer);
         if self.checksum != checksum {
             return Err(IntegrityError::ChecksumMismatch(self.checksum, checksum));
