@@ -186,12 +186,16 @@ fn run_mock_benchmark(bucket: &str, args: &CliArgs) -> anyhow::Result<()> {
     // Use mock client - create mock objects of 100GiB each
     let mock_object_size = 1024 * 1024 * 1024 * 1024; // 100GiB
 
+    // Initialise a PagedPool with part size
+    let paged_pool = mountpoint_s3_fs::memory::PagedPool::new();
+
     let mut config = MockClient::config()
         .bucket(bucket)
         .unordered_list_seed(None)
         .enable_backpressure(true)
         .part_size(args.part_size.unwrap_or(8 * 1024 * 1024) as usize)
-        .initial_read_window_size(mountpoint_s3_fs::s3::config::INITIAL_READ_WINDOW_SIZE);
+        .initial_read_window_size(mountpoint_s3_fs::s3::config::INITIAL_READ_WINDOW_SIZE)
+        .memory_pool(paged_pool);
 
     // Configure part size to match real client behavior
     if let Some(part_size) = args.part_size {

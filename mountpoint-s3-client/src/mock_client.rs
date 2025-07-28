@@ -7,13 +7,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
-use mountpoint_s3_crt::s3::client::BufferPoolUsageStats;
+use mountpoint_s3_crt::s3::client::{BufferPoolUsageStats, MetaRequestType};
+use mountpoint_s3_crt::s3::pool::MemoryPool;
 use rand::SeedableRng;
 use rand::seq::SliceRandom;
 use rand_chacha::ChaCha20Rng;
@@ -36,9 +37,39 @@ use crate::object_client::{
     PutObjectTrailingChecksums, RenameObjectError, RenameObjectParams, RenameObjectResult, RenamePreconditionTypes,
     RestoreStatus, UploadChecksum, UploadReview, UploadReviewPart,
 };
+use bytes::Bytes;
 
 mod leaky_bucket;
 pub mod throughput_client;
+
+// Dyn-compatible wrapper trait for MemoryPool
+trait MockMemoryPool: Send + Sync + std::fmt::Debug {
+    fn get_buffer(&self, size: usize) -> Vec<u8>;
+    fn trim(&self) -> bool;
+}
+
+// Wrapper implementation for any MemoryPool
+#[derive(Debug)]
+struct MemoryPoolWrapper<P: MemoryPool + std::fmt::Debug> {
+    pool: P,
+}
+
+impl<P: MemoryPool + std::fmt::Debug> MemoryPoolWrapper<P> {
+    fn new(pool: P) -> Self {
+        Self { pool }
+    }
+}
+
+impl<P: MemoryPool + std::fmt::Debug> MockMemoryPool for MemoryPoolWrapper<P> {
+    fn get_buffer(&self, size: usize) -> Vec<u8> {
+        let mut buffer = self.pool.get_buffer(size, MetaRequestType::Default);
+        buffer.as_mut().to_vec()
+    }
+
+    fn trim(&self) -> bool {
+        self.pool.trim()
+    }
+}
 
 pub const RAMP_MODULUS: usize = 251; // Largest prime under 256
 static_assertions::const_assert!((RAMP_MODULUS > 0) && (RAMP_MODULUS <= 256));
@@ -67,6 +98,7 @@ pub struct MockClientConfig {
     enable_backpressure: bool,
     initial_read_window_size: usize,
     enable_rename: bool,
+    buffer_pool: Option<Arc<Mutex<Box<dyn MockMemoryPool>>>>,
 }
 
 impl MockClientConfig {
@@ -106,6 +138,12 @@ impl MockClientConfig {
         self
     }
 
+    #[must_use = "S3ClientConfig follows a builder pattern"]
+    pub fn memory_pool(mut self, pool: impl MemoryPool + std::fmt::Debug + 'static) -> Self {
+        self.buffer_pool = Some(Arc::new(Mutex::new(Box::new(MemoryPoolWrapper::new(pool)))));
+        self
+    }
+
     /// Build the MockClient
     pub fn build(self) -> MockClient {
         MockClient::new(self)
@@ -120,6 +158,7 @@ pub struct MockClient {
     objects: Arc<RwLock<BTreeMap<String, MockObject>>>,
     in_progress_uploads: Arc<RwLock<BTreeSet<String>>>,
     operation_counts: Arc<RwLock<HashMap<Operation, u64>>>,
+    buffer_pool: Option<Arc<Mutex<Box<dyn MockMemoryPool>>>>,
 }
 
 fn add_object(objects: &Arc<RwLock<BTreeMap<String, MockObject>>>, key: &str, value: MockObject) {
@@ -129,11 +168,13 @@ fn add_object(objects: &Arc<RwLock<BTreeMap<String, MockObject>>>, key: &str, va
 impl MockClient {
     /// Create a new [MockClient] with the given config
     pub fn new(config: MockClientConfig) -> Self {
+        let buffer_pool = config.buffer_pool.clone();
         Self {
             config,
             objects: Default::default(),
             in_progress_uploads: Default::default(),
             operation_counts: Default::default(),
+            buffer_pool,
         }
     }
 
@@ -744,6 +785,7 @@ pub struct MockGetObjectResponse {
     length: usize,
     part_size: usize,
     backpressure_handle: Option<MockBackpressureHandle>,
+    buffer_pool: Option<Arc<Mutex<Box<dyn MockMemoryPool>>>>,
 }
 
 impl MockGetObjectResponse {
@@ -799,9 +841,18 @@ impl Stream for MockGetObjectResponse {
         }
         let next_part = self.object.read(self.next_offset, next_read_size);
 
+        // Use the buffer pool to allocate memory here, if configured
+        let data = if let Some(buffer_pool) = &self.buffer_pool {
+            let mut buffer = buffer_pool.lock().unwrap().get_buffer(next_read_size);
+            buffer.copy_from_slice(&next_part);
+            Bytes::from(buffer)
+        } else {
+            next_part.into()
+        };
+
         let result = GetBodyPart {
             offset: self.next_offset,
-            data: next_part.into(),
+            data,
         };
         self.next_offset += next_read_size as u64;
         self.length -= next_read_size;
@@ -942,6 +993,7 @@ impl ObjectClient for MockClient {
                 length,
                 part_size: self.config.part_size,
                 backpressure_handle,
+                buffer_pool: self.buffer_pool.clone(),
             })
         } else {
             Err(ObjectClientError::ServiceError(GetObjectError::NoSuchKey(
