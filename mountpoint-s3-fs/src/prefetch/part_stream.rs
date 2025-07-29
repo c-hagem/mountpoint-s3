@@ -1,10 +1,13 @@
 use async_stream::try_stream;
 use futures::task::SpawnExt;
 use futures::{Stream, StreamExt, pin_mut};
+use metrics::{counter, histogram};
 use mountpoint_s3_client::ObjectClient;
 use mountpoint_s3_client::types::{ClientBackpressureHandle, GetBodyPart, GetObjectParams, GetObjectResponse};
+use rayon::prelude::*;
 use std::marker::{Send, Sync};
 use std::sync::Arc;
+use std::time::Instant;
 use std::{fmt::Debug, ops::Range};
 use tracing::{Instrument, debug_span, error, trace};
 
@@ -290,19 +293,46 @@ where
         pin_mut!(request_stream);
         while let Some(next) = request_stream.next().await {
             let GetBodyPart { offset, data: mut body } = next?;
-            // pre-split the body into multiple parts as suggested by preferred part size
-            // in order to avoid validating checksum on large parts at read.
+
+            // Collect all chunks from this GetBodyPart for parallel processing
+            let mut chunks_to_process = Vec::new();
             let mut curr_offset = offset;
             let alignment = self.preferred_part_size;
+
+            // First pass: split body into chunks
             while !body.is_empty() {
                 let distance_to_align = alignment - (curr_offset % alignment as u64) as usize;
                 let chunk_size = distance_to_align.min(body.len());
                 let chunk = body.split_to(chunk_size);
-                // S3 doesn't provide checksum for us if the request range is not aligned to
-                // object part boundaries, so we're computing our own checksum here.
-                let checksum_bytes = ChecksummedBytes::new(chunk);
-                let part = Part::new(self.object_id.clone(), curr_offset, checksum_bytes);
-                curr_offset += part.len() as u64;
+
+                chunks_to_process.push((chunk, curr_offset));
+                curr_offset += chunk_size as u64;
+            }
+
+            // Use rayon to process chunks in parallel while maintaining order
+            let parallel_start = Instant::now();
+            let chunk_count = chunks_to_process.len();
+
+            let parts: Vec<_> = chunks_to_process
+                .into_par_iter()
+                .map(|(chunk, chunk_offset)| {
+                    let checksum_start = Instant::now();
+                    // Parallel checksum computation - this is the expensive operation
+                    let checksum_bytes = ChecksummedBytes::new(chunk);
+                    histogram!("prefetch.parallel_checksum.latency")
+                        .record(checksum_start.elapsed().as_micros() as f64);
+
+                    Part::new(self.object_id.clone(), chunk_offset, checksum_bytes)
+                })
+                .collect();
+
+            // Record parallel processing metrics
+            histogram!("prefetch.parallel_process.latency").record(parallel_start.elapsed().as_micros() as f64);
+            counter!("prefetch.parallel_process.count").increment(1);
+            counter!("prefetch.parallel_chunks.count").increment(chunk_count as u64);
+
+            // Push parts to queue in original order
+            for part in parts {
                 self.part_queue_producer.push(Ok(part));
             }
         }
