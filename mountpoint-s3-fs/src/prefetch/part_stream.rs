@@ -299,68 +299,65 @@ where
         &self,
         request_stream: impl Stream<Item = RequestReaderOutput<E>>,
     ) -> Result<(), PrefetchReadError<E>> {
-        // Create crossbeam channel for chunk pipeline
-        let (chunk_sender, chunk_receiver) = unbounded::<RawChunk>();
-
-        let object_id = self.object_id.clone();
-        let part_queue_producer = self.part_queue_producer.clone();
-
-        // Spawn rayon workers for parallel checksumming
-        let num_workers = 1;
-        for _ in 0..num_workers {
-            let chunk_receiver = chunk_receiver.clone();
-            let object_id = object_id.clone();
-            let part_queue_producer = part_queue_producer.clone();
-
-            rayon::spawn(move || {
-                while let Ok(raw_chunk) = chunk_receiver.recv() {
-                    let checksum_start = Instant::now();
-
-                    // Parallel checksum computation
-                    let checksum_bytes = ChecksummedBytes::new(raw_chunk.data);
-
-                    histogram!("prefetch.parallel_checksum.latency")
-                        .record(checksum_start.elapsed().as_micros() as f64);
-
-                    let part = Part::new(object_id.clone(), raw_chunk.offset, checksum_bytes);
-                    part_queue_producer.push(Ok(part));
-                    counter!("prefetch.parallel_checksum.count").increment(1);
-                }
-            });
-        }
-
-        // Async chunking - feed workers immediately as chunks are ready
+        const BATCH_SIZE: usize = 32; // Simple batching - process 3 chunks at once
         let alignment = self.preferred_part_size;
+
         pin_mut!(request_stream);
+        let mut chunk_batch = Vec::with_capacity(BATCH_SIZE);
 
         while let Some(next) = request_stream.next().await {
             let GetBodyPart { offset, data: mut body } = next?;
             let mut curr_offset = offset;
 
-            // Fast chunking - immediately send to workers
+            // Collect chunks into batches
             while !body.is_empty() {
                 let distance_to_align = alignment - (curr_offset % alignment as u64) as usize;
                 let chunk_size = distance_to_align.min(body.len());
                 let chunk = body.split_to(chunk_size);
 
-                let raw_chunk = RawChunk {
-                    data: chunk,
-                    offset: curr_offset,
-                    sequence: 0,
-                };
-
-                if chunk_sender.send(raw_chunk).is_err() {
-                    break; // Workers finished
-                }
-
+                chunk_batch.push((chunk, curr_offset));
                 curr_offset += chunk_size as u64;
-                counter!("prefetch.fast_chunks.count").increment(1);
+
+                // Process batch when full
+                if chunk_batch.len() >= BATCH_SIZE {
+                    self.process_chunk_batch(&mut chunk_batch).await;
+                }
             }
         }
 
-        // Close channel to signal workers to finish
-        drop(chunk_sender);
+        // Process remaining chunks
+        if !chunk_batch.is_empty() {
+            self.process_chunk_batch(&mut chunk_batch).await;
+        }
+
         Ok(())
+    }
+
+    // Process a small batch of chunks in parallel using rayon
+    async fn process_chunk_batch(&self, batch: &mut Vec<(bytes::Bytes, u64)>) {
+        let batch_start = Instant::now();
+
+        // Use rayon to process chunks in parallel while maintaining order
+        let parts: Vec<_> = batch
+            .par_drain(..)
+            .map(|(chunk, chunk_offset)| {
+                let checksum_start = Instant::now();
+
+                // Parallel checksum computation
+                let checksum_bytes = ChecksummedBytes::new(chunk);
+                histogram!("prefetch.batch_checksum.latency").record(checksum_start.elapsed().as_micros() as f64);
+
+                Part::new(self.object_id.clone(), chunk_offset, checksum_bytes)
+            })
+            .collect();
+
+        // Push parts to queue in original order (rayon maintains order in collect)
+        for part in parts {
+            self.part_queue_producer.push(Ok(part));
+        }
+
+        histogram!("prefetch.batch_process.latency").record(batch_start.elapsed().as_micros() as f64);
+        counter!("prefetch.batch_process.count").increment(1);
     }
 }
 

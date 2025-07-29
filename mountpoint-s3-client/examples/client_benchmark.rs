@@ -7,12 +7,15 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use futures::StreamExt;
+use mountpoint_s3_client::checksums::crc32c;
 use mountpoint_s3_client::config::{EndpointConfig, S3ClientConfig};
 use mountpoint_s3_client::mock_client::MockClient;
 use mountpoint_s3_client::types::{ClientBackpressureHandle, ETag, GetObjectParams, GetObjectResponse};
 use mountpoint_s3_client::{ObjectClient, S3CrtClient};
 use mountpoint_s3_crt::common::rust_log_adapter::RustLogAdapter;
+use rayon::prelude::*;
 use serde_json::{json, to_writer};
+use std::hint::black_box;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::Subscriber;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -44,6 +47,9 @@ fn run_benchmark(
     enable_backpressure: bool,
     output_path: Option<&Path>,
     max_duration: Option<Duration>,
+    enable_parallel_chunking: bool,
+    enable_checksumming: bool,
+    chunk_size: usize,
 ) {
     let mut total_bytes = 0;
     let total_start = Instant::now();
@@ -80,12 +86,54 @@ fn run_benchmark(
                             match request.next().await {
                                 Some(Ok(part)) => {
                                     let part_len = part.data.len();
-                                    tracing::info!(
-                                        target: "benchmarking_instrumentation",
-                                        received_obj_len = ?received_obj_len,
-                                        part_len = part_len,
-                                        "consuming data",
-                                    );
+
+                                    if enable_parallel_chunking {
+                                        // Parallel chunking without checksum computation
+                                        let chunking_start = Instant::now();
+                                        let mut chunks = Vec::new();
+                                        let mut offset = 0;
+
+                                        while offset < part.data.len() {
+                                            let end = std::cmp::min(offset + chunk_size, part.data.len());
+                                            chunks.push(part.data.slice(offset..end));
+                                            offset = end;
+                                        }
+                                        let count = chunks.len();
+                                        // Process chunks in parallel, optionally with checksum computation
+                                        if enable_checksumming {
+                                            let _checksums: Vec<_> = chunks
+                                                .into_par_iter()
+                                                .map(|chunk| {
+                                                    black_box(crc32c::checksum(&chunk))
+                                                })
+                                                .collect();
+                                        } else {
+                                            chunks
+                                                .into_par_iter()
+                                                .for_each(|chunk| {
+                                                    // Just access the chunk data without computing checksum
+                                                    black_box(chunk.len());
+                                                });
+                                        }
+
+                                        let chunking_duration = chunking_start.elapsed();
+                                        tracing::info!(
+                                            target: "benchmarking_instrumentation",
+                                            received_obj_len = ?received_obj_len,
+                                            part_len = part_len,
+                                            chunking_duration_us = chunking_duration.as_micros(),
+                                            chunks_count = count,
+                                            "consuming data with parallel chunking only",
+                                        );
+                                    } else {
+                                        tracing::info!(
+                                            target: "benchmarking_instrumentation",
+                                            received_obj_len = ?received_obj_len,
+                                            part_len = part_len,
+                                            "consuming data without chunking",
+                                        );
+                                    }
+
                                     received_size_clone.fetch_add(part_len as u64, Ordering::SeqCst);
                                     received_obj_len += part_len as u64;
                                     if enable_backpressure {
@@ -239,6 +287,15 @@ struct CliArgs {
         value_parser = parse_duration,
     )]
     max_duration: Option<Duration>,
+    #[arg(
+        long,
+        help = "Enable parallel chunking of received data (without checksum computation)"
+    )]
+    enable_parallel_chunking: bool,
+    #[arg(long, help = "Enable checksumming of chunks (requires --enable-parallel-chunking)")]
+    enable_checksumming: bool,
+    #[arg(long, help = "Chunk size in bytes for parallel chunking", default_value = "262144")]
+    chunk_size: usize,
 }
 
 fn create_s3_client_config(region: &str, args: &CliArgs, nics: Vec<String>) -> S3ClientConfig {
@@ -286,6 +343,9 @@ fn main() {
                 args.enable_backpressure,
                 args.output_file.as_deref(),
                 args.max_duration,
+                args.enable_parallel_chunking,
+                args.enable_checksumming,
+                args.chunk_size,
             );
         }
         Client::Mock { object_size, ref keys } => {
@@ -314,6 +374,9 @@ fn main() {
                 args.enable_backpressure,
                 args.output_file.as_deref(),
                 args.max_duration,
+                args.enable_parallel_chunking,
+                args.enable_checksumming,
+                args.chunk_size,
             );
         }
     }
