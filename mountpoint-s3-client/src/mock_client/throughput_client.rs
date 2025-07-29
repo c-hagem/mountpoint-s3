@@ -78,6 +78,11 @@ impl ThroughputMockClient {
     pub fn add_ramp_object(&self, key: &str, seed: u8, size: usize, etag: ETag) {
         self.inner.add_ramp_object(key, seed, size, etag);
     }
+
+    /// Add a constant object to this mock client's bucket using the client's configured memory pool
+    pub fn add_constant_object(&self, key: &str, v: u8, size: usize, etag: ETag) {
+        self.inner.add_constant_object(key, v, size, etag);
+    }
 }
 
 #[pin_project]

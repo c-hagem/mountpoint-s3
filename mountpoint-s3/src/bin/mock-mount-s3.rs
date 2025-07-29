@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
 
 pub fn create_mock_client(
     client_config: ClientConfig,
-    _pool: PagedPool,
+    pool: PagedPool,
     s3_path: &S3Path,
     personality: Option<S3Personality>,
 ) -> anyhow::Result<(Arc<ThroughputMockClient>, Runtime, S3Personality)> {
@@ -58,7 +58,8 @@ pub fn create_mock_client(
         .unordered_list_seed(None)
         .enable_backpressure(true)
         .initial_read_window_size(INITIAL_READ_WINDOW_SIZE) // matching real MP
-        .enable_rename(s3_personality.supports_rename_object());
+        .enable_rename(s3_personality.supports_rename_object())
+        .memory_pool(pool.clone());
 
     let client = if let TargetThroughputSetting::User {
         gbps: max_throughput_gbps,
@@ -87,14 +88,14 @@ pub fn create_mock_client(
         } else {
             format!("test-{size}B")
         };
-        client.add_object(&key, MockObject::ramp(0x11, size as usize, ETag::for_tests()));
+        client.add_ramp_object(&key, 0x11, size as usize, ETag::for_tests());
     }
     // Some objects that are useful for benchmarking
     for job_num in 0..1024 {
         let size_gib = 100;
         let size_bytes = size_gib * 1024u64.pow(3);
         let key = format!("j{job_num}_{size_gib}GiB.bin");
-        client.add_object(&key, MockObject::constant(1u8, size_bytes as usize, ETag::for_tests()));
+        client.add_constant_object(&key, 1u8, size_bytes as usize, ETag::for_tests());
     }
     client.add_object("hello.txt", MockObject::from_bytes(b"hello world", ETag::for_tests()));
     client.add_object("empty", MockObject::from_bytes(b"", ETag::for_tests()));

@@ -172,9 +172,20 @@ impl MockClient {
         MockObject::ramp_with_pool(seed, size, etag, self.config.memory_pool.clone())
     }
 
+    /// Create a constant object using the client's configured memory pool
+    pub fn create_constant_object(&self, v: u8, size: usize, etag: ETag) -> MockObject {
+        MockObject::constant_with_pool(v, size, etag, self.config.memory_pool.clone())
+    }
+
     /// Add a ramp object to this mock client's bucket using the client's configured memory pool
     pub fn add_ramp_object(&self, key: &str, seed: u8, size: usize, etag: ETag) {
         let object = self.create_ramp_object(seed, size, etag);
+        self.add_object(key, object);
+    }
+
+    /// Add a constant object to this mock client's bucket using the client's configured memory pool
+    pub fn add_constant_object(&self, key: &str, v: u8, size: usize, etag: ETag) {
+        let object = self.create_constant_object(v, size, etag);
         self.add_object(key, object);
     }
 
@@ -591,8 +602,23 @@ impl MockObject {
     }
 
     pub fn constant(v: u8, size: usize, etag: ETag) -> Self {
+        Self::constant_with_pool(v, size, etag, None)
+    }
+
+    pub fn constant_with_pool(v: u8, size: usize, etag: ETag, memory_pool: Option<Arc<dyn MockMemoryPool>>) -> Self {
+        let pool = memory_pool.clone();
         Self {
-            generator: Arc::new(move |_offset, size| vec![v; size].into_boxed_slice()),
+            generator: Arc::new(move |_offset, size| {
+                if let Some(ref pool) = pool {
+                    // Use memory pool to allocate buffer
+                    let mut buffer = pool.get_buffer(size, MetaRequestType::Default);
+                    buffer.fill(v);
+                    buffer
+                } else {
+                    // Fallback to regular allocation
+                    vec![v; size].into_boxed_slice()
+                }
+            }),
             size,
             storage_class: None,
             restore_status: None,
