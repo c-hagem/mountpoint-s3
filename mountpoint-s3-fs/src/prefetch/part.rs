@@ -1,3 +1,6 @@
+use std::time::Instant;
+
+use metrics::{counter, histogram};
 use thiserror::Error;
 
 use crate::checksums::{ChecksummedBytes, IntegrityError};
@@ -14,11 +17,17 @@ pub struct Part {
 
 impl Part {
     pub fn new(id: ObjectId, offset: u64, checksummed_bytes: ChecksummedBytes) -> Self {
-        Self {
+        let start = Instant::now();
+        counter!("prefetcher.part.new.count").increment(1);
+
+        let part = Self {
             id,
             offset,
             checksummed_bytes,
-        }
+        };
+
+        histogram!("prefetcher.part.new.latency").record(start.elapsed().as_micros() as f64);
+        part
     }
 
     pub fn extend(&mut self, other: &Part) -> Result<(), PartOperationError> {
@@ -28,7 +37,13 @@ impl Part {
     }
 
     pub fn into_bytes(self, id: &ObjectId, offset: u64) -> Result<ChecksummedBytes, PartOperationError> {
-        self.check(id, offset).map(|_| self.checksummed_bytes)
+        let start = Instant::now();
+        counter!("prefetcher.part.into_bytes.count").increment(1);
+
+        let result = self.check(id, offset).map(|_| self.checksummed_bytes);
+
+        histogram!("prefetcher.part.into_bytes.latency").record(start.elapsed().as_micros() as f64);
+        result
     }
 
     /// Split the part into two at the given index.
