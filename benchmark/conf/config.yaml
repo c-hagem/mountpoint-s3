@@ -54,6 +54,13 @@ benchmarks:
         max_memory_target: !!null
         mock_client: false
 
+    filesystem_api:
+        max_memory_target: !!null
+        crt_memory_limit_gib: !!null
+        threads_per_file: 1
+        iterations: !!null
+        mock_client: false
+
     crt:
         crt_benchmarks_path: !!null
 
@@ -78,7 +85,7 @@ hydra:
             "mountpoint.fuse_threads": 16
             "benchmarks.fio.direct_io": true
             "mountpoint.use_download_checksums": true, false
-            "benchmark_type": client, prefetch, fio, client-bp
+            "benchmark_type": client, prefetch, fio, client-bp, filesystem_api
             "read_size": 262144
             # 'benchmarks.prefetch.max_memory_target': !!null, 1073741824, 2147483648  # null, 1GB, 2GB
             #'benchmarks.client_backpressure.read_window_size': 8388608, 2147483648
