@@ -15,12 +15,11 @@ use clap::Parser;
 use futures::executor::ThreadPool;
 
 use mountpoint_s3::CliArgs;
-use mountpoint_s3_client::mock_client::throughput_client::ThroughputMockClient;
 use mountpoint_s3_client::mock_client::{MockClient, MockObject};
 use mountpoint_s3_client::types::ETag;
 use mountpoint_s3_fs::Runtime;
 use mountpoint_s3_fs::memory::PagedPool;
-use mountpoint_s3_fs::s3::config::{ClientConfig, INITIAL_READ_WINDOW_SIZE, TargetThroughputSetting};
+use mountpoint_s3_fs::s3::config::{ClientConfig, INITIAL_READ_WINDOW_SIZE};
 use mountpoint_s3_fs::s3::{S3Path, S3Personality};
 
 fn main() -> anyhow::Result<()> {
@@ -33,7 +32,7 @@ pub fn create_mock_client(
     pool: PagedPool,
     s3_path: &S3Path,
     personality: Option<S3Personality>,
-) -> anyhow::Result<(Arc<ThroughputMockClient>, Runtime, S3Personality)> {
+) -> anyhow::Result<(Arc<MockClient>, Runtime, S3Personality)> {
     // An extra little safety thing to make sure we can distinguish the real mount-s3 binary and
     // this one. Buckets starting with "sthree-" are always invalid against real S3:
     // https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html
@@ -61,16 +60,7 @@ pub fn create_mock_client(
         .enable_rename(s3_personality.supports_rename_object())
         .memory_pool(pool.clone());
 
-    let client = if let TargetThroughputSetting::User {
-        gbps: max_throughput_gbps,
-    } = client_config.throughput_target
-    {
-        tracing::info!("mock client limited to {max_throughput_gbps} Gb/s download throughput");
-        ThroughputMockClient::new(config, max_throughput_gbps)
-    } else {
-        tracing::info!("mock client with no throughput limit");
-        ThroughputMockClient::new_unlimited_throughput(config)
-    };
+    let client = MockClient::new(config);
 
     let runtime = Runtime::new(ThreadPool::builder().name_prefix("runtime").create()?);
 
