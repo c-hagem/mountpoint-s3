@@ -32,6 +32,7 @@
 //! as a mean to block ObjectPartStream thread to fetch more data.
 
 use std::fmt::Debug;
+use std::time::Instant;
 
 use metrics::{counter, histogram};
 use mountpoint_s3_client::error::{GetObjectError, ObjectClientError};
@@ -261,6 +262,9 @@ where
         offset: u64,
         length: usize,
     ) -> Result<ChecksummedBytes, PrefetchReadError<Client::ClientError>> {
+        let start = Instant::now();
+        counter!("prefetcher.read.count").increment(1);
+
         trace!(
             offset,
             length,
@@ -271,6 +275,8 @@ where
         if result.is_err() {
             self.reset_prefetch_to_offset(offset);
         }
+
+        histogram!("prefetcher.read.latency").record(start.elapsed().as_micros() as f64);
         result
     }
 

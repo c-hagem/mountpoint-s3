@@ -3,6 +3,7 @@ use std::{ops::Range, sync::Arc};
 
 use futures::task::{Spawn, SpawnExt};
 use futures::{Stream, StreamExt, pin_mut};
+use metrics::{counter, histogram};
 use mountpoint_s3_client::ObjectClient;
 use mountpoint_s3_client::types::GetBodyPart;
 use tracing::{Instrument, debug_span, trace, warn};
@@ -379,18 +380,25 @@ where
 /// Creates a Part that can be streamed to the prefetcher if the given bytes
 /// are in the request range, otherwise return None.
 fn try_make_part(bytes: &ChecksummedBytes, offset: u64, object_id: &ObjectId, range: &RequestRange) -> Option<Part> {
+    let start = Instant::now();
+    counter!("prefetcher.part.checksum_computation.count").increment(1);
+
     let part_range = range.trim_start(offset).trim_end(offset + bytes.len() as u64);
     if part_range.is_empty() {
+        histogram!("prefetcher.part.checksum_computation.latency").record(start.elapsed().as_micros() as f64);
         return None;
     }
     trace!(?part_range, "creating part trimmed to the request range");
     let trim_start = (part_range.start().saturating_sub(offset)) as usize;
     let trim_end = (part_range.end().saturating_sub(offset)) as usize;
-    Some(Part::new(
+    let result = Some(Part::new(
         object_id.clone(),
         part_range.start(),
         bytes.slice(trim_start..trim_end),
-    ))
+    ));
+
+    histogram!("prefetcher.part.checksum_computation.latency").record(start.elapsed().as_micros() as f64);
+    result
 }
 
 #[cfg(test)]

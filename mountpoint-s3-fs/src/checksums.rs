@@ -1,6 +1,8 @@
 use std::ops::{Bound, Range, RangeBounds};
+use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
+use metrics::{counter, histogram};
 use mountpoint_s3_client::checksums::crc32c::{self, Crc32c};
 
 use thiserror::Error;
@@ -39,12 +41,18 @@ impl ChecksummedBytes {
 
     /// Create [ChecksummedBytes] from [Bytes], calculating its checksum.
     pub fn new(bytes: Bytes) -> Self {
-        if checksums_disabled() {
+        let start = Instant::now();
+        counter!("checksummed_bytes.new.count").increment(1);
+
+        let result = if checksums_disabled() {
             Self::new_with_dummy_checksum(bytes)
         } else {
             let checksum = crc32c::checksum(&bytes);
             Self::new_from_inner_data(bytes, checksum)
-        }
+        };
+
+        histogram!("checksummed_bytes.new.latency").record(start.elapsed().as_micros() as f64);
+        result
     }
 
     pub fn new_with_dummy_checksum(bytes: Bytes) -> Self {
@@ -207,14 +215,22 @@ impl ChecksummedBytes {
     ///
     /// Return [IntegrityError] on data corruption.
     pub fn validate(&self) -> Result<(), IntegrityError> {
-        if checksums_disabled() {
-            return Ok(());
-        }
-        let checksum = crc32c::checksum(&self.buffer);
-        if self.checksum != checksum {
-            return Err(IntegrityError::ChecksumMismatch(self.checksum, checksum));
-        }
-        Ok(())
+        let start = Instant::now();
+        counter!("checksummed_bytes.validate.count").increment(1);
+
+        let result = if checksums_disabled() {
+            Ok(())
+        } else {
+            let checksum = crc32c::checksum(&self.buffer);
+            if self.checksum != checksum {
+                Err(IntegrityError::ChecksumMismatch(self.checksum, checksum))
+            } else {
+                Ok(())
+            }
+        };
+
+        histogram!("checksummed_bytes.validate.latency").record(start.elapsed().as_micros() as f64);
+        result
     }
 
     /// Provide the underlying bytes and the associated checksum,
