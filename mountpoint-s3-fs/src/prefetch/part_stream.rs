@@ -1,4 +1,5 @@
 use async_stream::try_stream;
+use crossbeam_channel::{Receiver, Sender, unbounded};
 use futures::task::SpawnExt;
 use futures::{Stream, StreamExt, pin_mut};
 use metrics::{counter, histogram};
@@ -6,7 +7,7 @@ use mountpoint_s3_client::ObjectClient;
 use mountpoint_s3_client::types::{ClientBackpressureHandle, GetBodyPart, GetObjectParams, GetObjectResponse};
 use rayon::prelude::*;
 use std::marker::{Send, Sync};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::{fmt::Debug, ops::Range};
 use tracing::{Instrument, debug_span, error, trace};
@@ -250,7 +251,7 @@ impl<Client: ObjectClient + Clone + Send + Sync + 'static> ObjectPartStream<Clie
                     );
 
                     let part_composer = ClientPartComposer {
-                        part_queue_producer,
+                        part_queue_producer: part_queue_producer.into(),
                         object_id: config.object_id,
                         preferred_part_size: config.preferred_part_size,
                     };
@@ -269,14 +270,22 @@ impl<Client: ObjectClient + Clone + Send + Sync + 'static> ObjectPartStream<Clie
 }
 
 struct ClientPartComposer<E: std::error::Error> {
-    part_queue_producer: PartQueueProducer<E>,
+    part_queue_producer: Arc<PartQueueProducer<E>>,
     object_id: ObjectId,
     preferred_part_size: usize,
 }
 
+// Raw chunk data for the pipeline
+#[derive(Debug)]
+struct RawChunk {
+    data: bytes::Bytes,
+    offset: u64,
+    sequence: u64,
+}
+
 impl<E> ClientPartComposer<E>
 where
-    E: std::error::Error + Send + Sync,
+    E: std::error::Error + Send + Sync + 'static,
 {
     async fn try_compose_parts(&self, request_stream: impl Stream<Item = RequestReaderOutput<E>>) {
         if let Err(e) = self.compose_parts(request_stream).await {
@@ -290,52 +299,67 @@ where
         &self,
         request_stream: impl Stream<Item = RequestReaderOutput<E>>,
     ) -> Result<(), PrefetchReadError<E>> {
+        // Create crossbeam channel for chunk pipeline
+        let (chunk_sender, chunk_receiver) = unbounded::<RawChunk>();
+
+        let object_id = self.object_id.clone();
+        let part_queue_producer = self.part_queue_producer.clone();
+
+        // Spawn rayon workers for parallel checksumming
+        let num_workers = 1;
+        for _ in 0..num_workers {
+            let chunk_receiver = chunk_receiver.clone();
+            let object_id = object_id.clone();
+            let part_queue_producer = part_queue_producer.clone();
+
+            rayon::spawn(move || {
+                while let Ok(raw_chunk) = chunk_receiver.recv() {
+                    let checksum_start = Instant::now();
+
+                    // Parallel checksum computation
+                    let checksum_bytes = ChecksummedBytes::new(raw_chunk.data);
+
+                    histogram!("prefetch.parallel_checksum.latency")
+                        .record(checksum_start.elapsed().as_micros() as f64);
+
+                    let part = Part::new(object_id.clone(), raw_chunk.offset, checksum_bytes);
+                    part_queue_producer.push(Ok(part));
+                    counter!("prefetch.parallel_checksum.count").increment(1);
+                }
+            });
+        }
+
+        // Async chunking - feed workers immediately as chunks are ready
+        let alignment = self.preferred_part_size;
         pin_mut!(request_stream);
+
         while let Some(next) = request_stream.next().await {
             let GetBodyPart { offset, data: mut body } = next?;
-
-            // Collect all chunks from this GetBodyPart for parallel processing
-            let mut chunks_to_process = Vec::new();
             let mut curr_offset = offset;
-            let alignment = self.preferred_part_size;
 
-            // First pass: split body into chunks
+            // Fast chunking - immediately send to workers
             while !body.is_empty() {
                 let distance_to_align = alignment - (curr_offset % alignment as u64) as usize;
                 let chunk_size = distance_to_align.min(body.len());
                 let chunk = body.split_to(chunk_size);
 
-                chunks_to_process.push((chunk, curr_offset));
+                let raw_chunk = RawChunk {
+                    data: chunk,
+                    offset: curr_offset,
+                    sequence: 0,
+                };
+
+                if chunk_sender.send(raw_chunk).is_err() {
+                    break; // Workers finished
+                }
+
                 curr_offset += chunk_size as u64;
-            }
-
-            // Use rayon to process chunks in parallel while maintaining order
-            let parallel_start = Instant::now();
-            let chunk_count = chunks_to_process.len();
-
-            let parts: Vec<_> = chunks_to_process
-                .into_par_iter()
-                .map(|(chunk, chunk_offset)| {
-                    let checksum_start = Instant::now();
-                    // Parallel checksum computation - this is the expensive operation
-                    let checksum_bytes = ChecksummedBytes::new(chunk);
-                    histogram!("prefetch.parallel_checksum.latency")
-                        .record(checksum_start.elapsed().as_micros() as f64);
-
-                    Part::new(self.object_id.clone(), chunk_offset, checksum_bytes)
-                })
-                .collect();
-
-            // Record parallel processing metrics
-            histogram!("prefetch.parallel_process.latency").record(parallel_start.elapsed().as_micros() as f64);
-            counter!("prefetch.parallel_process.count").increment(1);
-            counter!("prefetch.parallel_chunks.count").increment(chunk_count as u64);
-
-            // Push parts to queue in original order
-            for part in parts {
-                self.part_queue_producer.push(Ok(part));
+                counter!("prefetch.fast_chunks.count").increment(1);
             }
         }
+
+        // Close channel to signal workers to finish
+        drop(chunk_sender);
         Ok(())
     }
 }
