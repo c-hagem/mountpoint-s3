@@ -33,6 +33,7 @@ impl ChecksummedBytes {
     }
 
     /// Create [ChecksummedBytes] from [Bytes], calculating its checksum.
+    #[inline]
     pub fn new(bytes: Bytes) -> Self {
         let checksum = crc32c::checksum(&bytes);
         Self::new_from_inner_data(bytes, checksum)
