@@ -296,7 +296,7 @@ where
             let mut curr_offset = offset;
             let alignment = self.preferred_part_size;
 
-            if body.len() == 8 * 1024 * 1024 && self.preferred_part_size == 256 * 1024 {
+            if !checksums_disabled() && body.len() == 8 * 1024 * 1024 && self.preferred_part_size == 256 * 1024 {
                 // Fully unrolled 8MB part processing (32 chunks of 256KB each)
                 // Create ChecksummedBytes - either with real checksums or dummy ones if disabled
                 let (
