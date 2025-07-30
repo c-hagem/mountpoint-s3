@@ -88,29 +88,29 @@ fn run_benchmark(
                                     let part_len = part.data.len();
 
                                     if enable_parallel_chunking {
-                                        // Parallel chunking without checksum computation
+                                        // Parallel chunking with rayon for both slicing and processing
                                         let chunking_start = Instant::now();
-                                        let mut chunks = Vec::new();
-                                        let mut offset = 0;
+                                        let data_len = part.data.len();
+                                        let num_chunks = (data_len + chunk_size - 1) / chunk_size;
 
-                                        while offset < part.data.len() {
-                                            let end = std::cmp::min(offset + chunk_size, part.data.len());
-                                            chunks.push(part.data.slice(offset..end));
-                                            offset = end;
-                                        }
-                                        let count = chunks.len();
-                                        // Process chunks in parallel, optionally with checksum computation
+                                        // Use rayon to both generate chunks and process them in parallel
                                         if enable_checksumming {
-                                            let _checksums: Vec<_> = chunks
+                                            let _checksums: Vec<_> = (0..num_chunks)
                                                 .into_par_iter()
-                                                .map(|chunk| {
+                                                .map(|i| {
+                                                    let start = i * chunk_size;
+                                                    let end = std::cmp::min(start + chunk_size, data_len);
+                                                    let chunk = part.data.slice(start..end);
                                                     black_box(crc32c::checksum(&chunk))
                                                 })
                                                 .collect();
                                         } else {
-                                            chunks
+                                            (0..num_chunks)
                                                 .into_par_iter()
-                                                .for_each(|chunk| {
+                                                .for_each(|i| {
+                                                    let start = i * chunk_size;
+                                                    let end = std::cmp::min(start + chunk_size, data_len);
+                                                    let chunk = part.data.slice(start..end);
                                                     // Just access the chunk data without computing checksum
                                                     black_box(chunk.len());
                                                 });
@@ -122,8 +122,8 @@ fn run_benchmark(
                                             received_obj_len = ?received_obj_len,
                                             part_len = part_len,
                                             chunking_duration_us = chunking_duration.as_micros(),
-                                            chunks_count = count,
-                                            "consuming data with parallel chunking only",
+                                            chunks_count = num_chunks,
+                                            "consuming data with parallel chunking and slicing",
                                         );
                                     } else {
                                         tracing::info!(
