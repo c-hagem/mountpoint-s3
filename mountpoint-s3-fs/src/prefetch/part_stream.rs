@@ -297,6 +297,7 @@ where
             let alignment = self.preferred_part_size;
 
             if body.len() == 8 * 1024 * 1024 && self.preferred_part_size == 256 * 1024 {
+                debug!("Unrolled loop");
                 // Fully unrolled 8MB part processing (32 chunks of 256KB each)
                 // First compute all checksums explicitly
                 let checksum1 = crc32c::checksum(&body.slice(0..262144));
