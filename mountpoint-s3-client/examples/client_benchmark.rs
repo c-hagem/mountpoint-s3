@@ -13,7 +13,7 @@ use mountpoint_s3_client::mock_client::MockClient;
 use mountpoint_s3_client::types::{ClientBackpressureHandle, ETag, GetBodyPart, GetObjectParams, GetObjectResponse};
 use mountpoint_s3_client::{ObjectClient, S3CrtClient};
 use mountpoint_s3_crt::common::rust_log_adapter::RustLogAdapter;
-use rayon::prelude::*;
+// Removed rayon for manual unrolled loop approach
 use serde_json::{json, to_writer};
 use std::hint::black_box;
 use tracing_subscriber::EnvFilter;
@@ -87,44 +87,116 @@ fn run_benchmark(
                         let mut part_buffer: Vec<GetBodyPart> = Vec::new();
                         const BUFFER_SIZE: usize = 4; // Number of parts to buffer before processing
 
-                        let mut process_buffered_parts = |parts: &mut Vec<GetBodyPart>| {
+                        let mut process_buffered_parts = |parts: &[GetBodyPart]| {
                             if parts.is_empty() {
                                 return;
                             }
 
                             if enable_parallel_chunking {
                                 let chunking_start = Instant::now();
-                                let mut total_chunks = 0usize;
-                                for part in parts.iter() {
-                                    total_chunks += (part.data.len() + chunk_size - 1) / chunk_size;
-                                }
+                                let total_chunks: usize = parts.iter()
+                                    .map(|part| (part.data.len() + chunk_size - 1) / chunk_size)
+                                    .sum();
 
-                                // Process all parts in parallel
+                                // Manually unrolled processing for exactly 4 parts - maximum performance
                                 if enable_checksumming {
-                                    let _checksums: Vec<_> = parts
-                                        .par_iter()
-                                        .flat_map(|part| {
-                                            let data_len = part.data.len();
-                                            let num_chunks = (data_len + chunk_size - 1) / chunk_size;
-                                            (0..num_chunks).into_par_iter().map(move |i| {
-                                                let start = i * chunk_size;
-                                                let end = std::cmp::min(start + chunk_size, data_len);
-                                                let chunk = part.data.slice(start..end);
-                                                black_box(crc32c::checksum(&chunk))
-                                            })
-                                        })
-                                        .collect();
-                                } else {
-                                    parts.par_iter().for_each(|part| {
+                                    // Process part 0
+                                    if parts.len() > 0 {
+                                        let part = &parts[0];
                                         let data_len = part.data.len();
-                                        let num_chunks = (data_len + chunk_size - 1) / chunk_size;
-                                        (0..num_chunks).into_par_iter().for_each(|i| {
-                                            let start = i * chunk_size;
-                                            let end = std::cmp::min(start + chunk_size, data_len);
-                                            let chunk = part.data.slice(start..end);
+                                        let mut offset = 0;
+                                        while offset < data_len {
+                                            let end = std::cmp::min(offset + chunk_size, data_len);
+                                            let chunk = part.data.slice(offset..end);
+                                            let _checksum = black_box(crc32c::checksum(&chunk));
+                                            offset = end;
+                                        }
+                                    }
+                                    // Process part 1
+                                    if parts.len() > 1 {
+                                        let part = &parts[1];
+                                        let data_len = part.data.len();
+                                        let mut offset = 0;
+                                        while offset < data_len {
+                                            let end = std::cmp::min(offset + chunk_size, data_len);
+                                            let chunk = part.data.slice(offset..end);
+                                            let _checksum = black_box(crc32c::checksum(&chunk));
+                                            offset = end;
+                                        }
+                                    }
+                                    // Process part 2
+                                    if parts.len() > 2 {
+                                        let part = &parts[2];
+                                        let data_len = part.data.len();
+                                        let mut offset = 0;
+                                        while offset < data_len {
+                                            let end = std::cmp::min(offset + chunk_size, data_len);
+                                            let chunk = part.data.slice(offset..end);
+                                            let _checksum = black_box(crc32c::checksum(&chunk));
+                                            offset = end;
+                                        }
+                                    }
+                                    // Process part 3
+                                    if parts.len() > 3 {
+                                        let part = &parts[3];
+                                        let data_len = part.data.len();
+                                        let mut offset = 0;
+                                        while offset < data_len {
+                                            let end = std::cmp::min(offset + chunk_size, data_len);
+                                            let chunk = part.data.slice(offset..end);
+                                            let _checksum = black_box(crc32c::checksum(&chunk));
+                                            offset = end;
+                                        }
+                                    }
+                                } else {
+                                    // Process part 0
+                                    if parts.len() > 0 {
+                                        let part = &parts[0];
+                                        let data_len = part.data.len();
+                                        let mut offset = 0;
+                                        while offset < data_len {
+                                            let end = std::cmp::min(offset + chunk_size, data_len);
+                                            let chunk = part.data.slice(offset..end);
                                             black_box(chunk.len());
-                                        });
-                                    });
+                                            offset = end;
+                                        }
+                                    }
+                                    // Process part 1
+                                    if parts.len() > 1 {
+                                        let part = &parts[1];
+                                        let data_len = part.data.len();
+                                        let mut offset = 0;
+                                        while offset < data_len {
+                                            let end = std::cmp::min(offset + chunk_size, data_len);
+                                            let chunk = part.data.slice(offset..end);
+                                            black_box(chunk.len());
+                                            offset = end;
+                                        }
+                                    }
+                                    // Process part 2
+                                    if parts.len() > 2 {
+                                        let part = &parts[2];
+                                        let data_len = part.data.len();
+                                        let mut offset = 0;
+                                        while offset < data_len {
+                                            let end = std::cmp::min(offset + chunk_size, data_len);
+                                            let chunk = part.data.slice(offset..end);
+                                            black_box(chunk.len());
+                                            offset = end;
+                                        }
+                                    }
+                                    // Process part 3
+                                    if parts.len() > 3 {
+                                        let part = &parts[3];
+                                        let data_len = part.data.len();
+                                        let mut offset = 0;
+                                        while offset < data_len {
+                                            let end = std::cmp::min(offset + chunk_size, data_len);
+                                            let chunk = part.data.slice(offset..end);
+                                            black_box(chunk.len());
+                                            offset = end;
+                                        }
+                                    }
                                 }
 
                                 let chunking_duration = chunking_start.elapsed();
@@ -136,7 +208,7 @@ fn run_benchmark(
                                     total_bytes = total_bytes,
                                     chunking_duration_us = chunking_duration.as_micros(),
                                     chunks_count = total_chunks,
-                                    "consuming buffered parts with parallel chunking",
+                                    "consuming buffered parts with fully unrolled processing",
                                 );
                             } else {
                                 for part in parts.iter() {
@@ -154,24 +226,33 @@ fn run_benchmark(
                                 let part_len = part.data.len();
                                 received_size_clone.fetch_add(part_len as u64, Ordering::SeqCst);
                                 received_obj_len += part_len as u64;
-                            }
 
-                            parts.clear();
+                                if enable_backpressure {
+                                    if let Some(backpressure_handle) = backpressure_handle.as_mut() {
+                                        tracing::info!(
+                                            target: "benchmarking_instrumentation",
+                                            preferred_read_window_size = ?client.initial_read_window_size(),
+                                            prev_read_window_end_offset = ?(client.initial_read_window_size().unwrap() as u64 + received_obj_len - part_len as u64),
+                                            new_read_window_end_offset = ?(client.initial_read_window_size().unwrap() as u64 + received_obj_len),
+                                            part_len = part_len,
+                                            "advancing read window for buffered part",
+                                        );
+
+                                        backpressure_handle.increment_read_window(part_len);
+                                    }
+                                }
+                            }
                         };
 
                         while Instant::now() < timeout {
                             match request.next().await {
                                 Some(Ok(part)) => {
-                                    let part_len = part.data.len();
                                     part_buffer.push(part);
-                                    if enable_backpressure {
-                                        if let Some(backpressure_handle) = backpressure_handle.as_mut() {
-                                            backpressure_handle.increment_read_window(part_len);
-                                        }
-                                    }
+
                                     // Process buffered parts when we have enough
                                     if part_buffer.len() >= BUFFER_SIZE {
-                                        process_buffered_parts(&mut part_buffer);
+                                        process_buffered_parts(&part_buffer);
+                                        part_buffer.clear();
                                     }
                                 }
                                 Some(Err(e)) => {
@@ -183,7 +264,9 @@ fn run_benchmark(
                         }
 
                         // Process any remaining buffered parts
-                        process_buffered_parts(&mut part_buffer);
+                        if !part_buffer.is_empty() {
+                            process_buffered_parts(&part_buffer);
+                        }
                     })
                 });
             }
