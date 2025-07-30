@@ -310,11 +310,6 @@ where
             // Process remaining data in aligned chunks using simple for loop
             let remaining_chunks = body.len() / alignment;
 
-            // Compiler hints for optimization
-            //unsafe {
-            //    std::hint::assert_unchecked(remaining_chunks <= 64); // reasonable upper bound for 8MB/256KB
-            //}
-
             for i in 0..remaining_chunks {
                 debug_assert!(i < remaining_chunks);
 
