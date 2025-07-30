@@ -297,196 +297,105 @@ where
 
             if body.len() == 8 * 1024 * 1024 && self.preferred_part_size == 256 * 1024 {
                 // Fully unrolled 8MB part processing (32 chunks of 256KB each)
-                trace!("Going to the unrolled loop xxx");
-                let checksum_bytes = ChecksummedBytes::new(body.slice(0..262144));
+                // First compute all checksums
+                let cb1 = ChecksummedBytes::new(body.slice(0..262144));
+                let cb2 = ChecksummedBytes::new(body.slice(262144..524288));
+                let cb3 = ChecksummedBytes::new(body.slice(524288..786432));
+                let cb4 = ChecksummedBytes::new(body.slice(786432..1048576));
+                let cb5 = ChecksummedBytes::new(body.slice(1048576..1310720));
+                let cb6 = ChecksummedBytes::new(body.slice(1310720..1572864));
+                let cb7 = ChecksummedBytes::new(body.slice(1572864..1835008));
+                let cb8 = ChecksummedBytes::new(body.slice(1835008..2097152));
+                let cb9 = ChecksummedBytes::new(body.slice(2097152..2359296));
+                let cb10 = ChecksummedBytes::new(body.slice(2359296..2621440));
+                let cb11 = ChecksummedBytes::new(body.slice(2621440..2883584));
+                let cb12 = ChecksummedBytes::new(body.slice(2883584..3145728));
+                let cb13 = ChecksummedBytes::new(body.slice(3145728..3407872));
+                let cb14 = ChecksummedBytes::new(body.slice(3407872..3670016));
+                let cb15 = ChecksummedBytes::new(body.slice(3670016..3932160));
+                let cb16 = ChecksummedBytes::new(body.slice(3932160..4194304));
+                let cb17 = ChecksummedBytes::new(body.slice(4194304..4456448));
+                let cb18 = ChecksummedBytes::new(body.slice(4456448..4718592));
+                let cb19 = ChecksummedBytes::new(body.slice(4718592..4980736));
+                let cb20 = ChecksummedBytes::new(body.slice(4980736..5242880));
+                let cb21 = ChecksummedBytes::new(body.slice(5242880..5505024));
+                let cb22 = ChecksummedBytes::new(body.slice(5505024..5767168));
+                let cb23 = ChecksummedBytes::new(body.slice(5767168..6029312));
+                let cb24 = ChecksummedBytes::new(body.slice(6029312..6291456));
+                let cb25 = ChecksummedBytes::new(body.slice(6291456..6553600));
+                let cb26 = ChecksummedBytes::new(body.slice(6553600..6815744));
+                let cb27 = ChecksummedBytes::new(body.slice(6815744..7077888));
+                let cb28 = ChecksummedBytes::new(body.slice(7077888..7340032));
+                let cb29 = ChecksummedBytes::new(body.slice(7340032..7602176));
+                let cb30 = ChecksummedBytes::new(body.slice(7602176..7864320));
+                let cb31 = ChecksummedBytes::new(body.slice(7864320..8126464));
+                let cb32 = ChecksummedBytes::new(body.slice(8126464..8388608));
+
+                // Then push them all
                 self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset, checksum_bytes)));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(262144..524288));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 262144,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(524288..786432));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 524288,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(786432..1048576));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 786432,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(1048576..1310720));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 1048576,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(1310720..1572864));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 1310720,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(1572864..1835008));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 1572864,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(1835008..2097152));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 1835008,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(2097152..2359296));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 2097152,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(2359296..2621440));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 2359296,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(2621440..2883584));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 2621440,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(2883584..3145728));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 2883584,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(3145728..3407872));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 3145728,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(3407872..3670016));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 3407872,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(3670016..3932160));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 3670016,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(3932160..4194304));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 3932160,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(4194304..4456448));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 4194304,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(4456448..4718592));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 4456448,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(4718592..4980736));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 4718592,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(4980736..5242880));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 4980736,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(5242880..5505024));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 5242880,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(5505024..5767168));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 5505024,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(5767168..6029312));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 5767168,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(6029312..6291456));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 6029312,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(6291456..6553600));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 6291456,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(6553600..6815744));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 6553600,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(6815744..7077888));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 6815744,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(7077888..7340032));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 7077888,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(7340032..7602176));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 7340032,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(7602176..7864320));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 7602176,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(7864320..8126464));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 7864320,
-                    checksum_bytes,
-                )));
-                let checksum_bytes = ChecksummedBytes::new(body.slice(8126464..8388608));
-                self.part_queue_producer.push(Ok(Part::new(
-                    self.object_id.clone(),
-                    curr_offset + 8126464,
-                    checksum_bytes,
-                )));
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset, cb1)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 262144, cb2)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 524288, cb3)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 786432, cb4)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 1048576, cb5)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 1310720, cb6)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 1572864, cb7)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 1835008, cb8)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 2097152, cb9)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 2359296, cb10)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 2621440, cb11)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 2883584, cb12)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 3145728, cb13)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 3407872, cb14)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 3670016, cb15)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 3932160, cb16)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 4194304, cb17)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 4456448, cb18)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 4718592, cb19)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 4980736, cb20)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 5242880, cb21)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 5505024, cb22)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 5767168, cb23)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 6029312, cb24)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 6291456, cb25)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 6553600, cb26)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 6815744, cb27)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 7077888, cb28)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 7340032, cb29)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 7602176, cb30)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 7864320, cb31)));
+                self.part_queue_producer
+                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 8126464, cb32)));
             } else {
                 while !body.is_empty() {
                     let distance_to_align = alignment - (curr_offset % alignment as u64) as usize;
