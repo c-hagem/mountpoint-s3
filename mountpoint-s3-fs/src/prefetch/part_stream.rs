@@ -7,7 +7,7 @@ use mountpoint_s3_client::types::{ClientBackpressureHandle, GetBodyPart, GetObje
 use std::marker::{Send, Sync};
 use std::sync::Arc;
 use std::{fmt::Debug, ops::Range};
-use tracing::{Instrument, debug_span, error, trace};
+use tracing::{Instrument, debug, debug_span, error, trace};
 
 use crate::async_util::Runtime;
 use crate::checksums::ChecksummedBytes;
