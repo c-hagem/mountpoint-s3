@@ -295,43 +295,34 @@ where
             // in order to avoid validating checksum on large parts at read.
             let mut curr_offset = offset;
             let alignment = self.preferred_part_size;
+            while !body.is_empty() {
+                let distance_to_align = alignment - (curr_offset % alignment as u64) as usize;
+                let chunk_size = distance_to_align.min(body.len());
+                let is_aligned = (curr_offset % alignment as u64) == 0;
+                let alignment_type = if is_aligned { "aligned" } else { "unaligned" };
 
-            // Handle (potentially) first unaligned chunk to achieve alignment
-            let misalignment = (curr_offset % alignment as u64) as usize;
-            if misalignment != 0 && !body.is_empty() {
-                let first_chunk_size = (alignment - misalignment).min(body.len());
-                let chunk = body.split_to(first_chunk_size);
-                let checksum_start = Instant::now();
-                let checksum_bytes = ChecksummedBytes::new(chunk);
-                metrics::histogram!("prefetch.checksum_computation_us", "path" => "unaligned")
-                    .record(checksum_start.elapsed().as_micros() as f64);
-                let part = Part::new(self.object_id.clone(), curr_offset, checksum_bytes);
-                curr_offset += part.len() as u64;
-                self.part_queue_producer.push(Ok(part));
-            }
-
-            // Process remaining data in aligned chunks using simple for loop
-            let remaining_chunks = body.len() / alignment;
-
-            for _i in 0..remaining_chunks {
-                let chunk = body.split_to(alignment);
-                // Compute checksum based on whether checksums are disabled
-                let checksum_bytes = ChecksummedBytes::new(chunk);
-                let part = Part::new(self.object_id.clone(), curr_offset, checksum_bytes);
-                curr_offset += part.len() as u64;
-                self.part_queue_producer.push(Ok(part));
-            }
-
-            // Handle final partial chunk if any
-            if !body.is_empty() {
-                let chunk = body.split_to(body.len());
+                let chunk = body.split_to(chunk_size);
                 // S3 doesn't provide checksum for us if the request range is not aligned to
                 // object part boundaries, so we're computing our own checksum here.
                 let checksum_start = Instant::now();
                 let checksum_bytes = ChecksummedBytes::new(chunk);
-                metrics::histogram!("prefetch.checksum_computation_us", "path" => "partial")
+
+                // Record checksum computation timing with alignment info
+                metrics::histogram!("prefetch.checksum_computation_us", "alignment" => alignment_type)
                     .record(checksum_start.elapsed().as_micros() as f64);
+                metrics::counter!("prefetch.checksum_computation_count", "alignment" => alignment_type).increment(1);
+
+                // Record chunk size distribution
+                metrics::histogram!("prefetch.chunk_size_bytes", "alignment" => alignment_type)
+                    .record(chunk_size as f64);
+
+                // Record distance to align for unaligned chunks
+                if !is_aligned {
+                    metrics::histogram!("prefetch.distance_to_align_bytes").record(distance_to_align as f64);
+                }
+
                 let part = Part::new(self.object_id.clone(), curr_offset, checksum_bytes);
+                curr_offset += part.len() as u64;
                 self.part_queue_producer.push(Ok(part));
             }
         }
