@@ -31,11 +31,11 @@
 //! more data from the sources and put them into the part queue. The BackpressureLimiter should be used
 //! as a mean to block ObjectPartStream thread to fetch more data.
 
-use std::fmt::Debug;
-
 use metrics::{counter, histogram};
 use mountpoint_s3_client::error::{GetObjectError, ObjectClientError};
 use mountpoint_s3_client::{ObjectClient, error_metadata::ProvideErrorMetadata};
+use std::fmt::Debug;
+use std::time::Instant;
 use thiserror::Error;
 use tracing::trace;
 
@@ -267,10 +267,12 @@ where
             next_seq_offset = self.next_sequential_read_offset,
             "read"
         );
+        let read_start = Instant::now();
         let result = self.try_read(offset, length).await;
         if result.is_err() {
             self.reset_prefetch_to_offset(offset);
         }
+        metrics::histogram!("prefetch.read_us").record(read_start.elapsed().as_micros() as f64);
         result
     }
 

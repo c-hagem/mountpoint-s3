@@ -5,6 +5,7 @@ use mountpoint_s3_client::ObjectClient;
 use mountpoint_s3_client::types::{ClientBackpressureHandle, GetBodyPart, GetObjectParams, GetObjectResponse};
 use std::marker::{Send, Sync};
 use std::sync::Arc;
+use std::time::Instant;
 use std::{fmt::Debug, ops::Range};
 use tracing::{Instrument, debug_span, error, trace};
 
@@ -300,7 +301,10 @@ where
             if misalignment != 0 && !body.is_empty() {
                 let first_chunk_size = (alignment - misalignment).min(body.len());
                 let chunk = body.split_to(first_chunk_size);
+                let checksum_start = Instant::now();
                 let checksum_bytes = ChecksummedBytes::new(chunk);
+                metrics::histogram!("prefetch.checksum_computation_us", "path" => "unaligned")
+                    .record(checksum_start.elapsed().as_micros() as f64);
                 let part = Part::new(self.object_id.clone(), curr_offset, checksum_bytes);
                 curr_offset += part.len() as u64;
                 self.part_queue_producer.push(Ok(part));
@@ -309,7 +313,7 @@ where
             // Process remaining data in aligned chunks using simple for loop
             let remaining_chunks = body.len() / alignment;
 
-            for i in 0..remaining_chunks {
+            for _i in 0..remaining_chunks {
                 let chunk = body.split_to(alignment);
                 // Compute checksum based on whether checksums are disabled
                 let checksum_bytes = ChecksummedBytes::new(chunk);
@@ -323,7 +327,10 @@ where
                 let chunk = body.split_to(body.len());
                 // S3 doesn't provide checksum for us if the request range is not aligned to
                 // object part boundaries, so we're computing our own checksum here.
+                let checksum_start = Instant::now();
                 let checksum_bytes = ChecksummedBytes::new(chunk);
+                metrics::histogram!("prefetch.checksum_computation_us", "path" => "partial")
+                    .record(checksum_start.elapsed().as_micros() as f64);
                 let part = Part::new(self.object_id.clone(), curr_offset, checksum_bytes);
                 self.part_queue_producer.push(Ok(part));
             }
