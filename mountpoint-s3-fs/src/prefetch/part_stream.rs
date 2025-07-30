@@ -237,7 +237,7 @@ impl<Client: ObjectClient + Clone + Send + Sync + 'static> ObjectPartStream<Clie
             .runtime
             .spawn_with_handle(
                 async move {
-                    let first_read_window_end_offset = config.range.start() + config.initial_read_window_size as u64;
+                    let first_read_window_end_offset = config.range.start() + 8 * 1024 * 1024;
                     let request_stream = read_from_client_stream(
                         &mut backpressure_limiter,
                         &client,
@@ -297,7 +297,6 @@ where
             let alignment = self.preferred_part_size;
 
             if body.len() == 8 * 1024 * 1024 && self.preferred_part_size == 256 * 1024 {
-                debug!("Unrolled loop");
                 // Fully unrolled 8MB part processing (32 chunks of 256KB each)
                 // First compute all checksums explicitly
                 let checksum1 = crc32c::checksum(&body.slice(0..262144));
