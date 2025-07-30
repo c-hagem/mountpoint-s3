@@ -10,7 +10,7 @@ use futures::StreamExt;
 use mountpoint_s3_client::checksums::crc32c;
 use mountpoint_s3_client::config::{EndpointConfig, S3ClientConfig};
 use mountpoint_s3_client::mock_client::MockClient;
-use mountpoint_s3_client::types::{ClientBackpressureHandle, ETag, GetObjectParams, GetObjectResponse};
+use mountpoint_s3_client::types::{ClientBackpressureHandle, ETag, GetBodyPart, GetObjectParams, GetObjectResponse};
 use mountpoint_s3_client::{ObjectClient, S3CrtClient};
 use mountpoint_s3_crt::common::rust_log_adapter::RustLogAdapter;
 use rayon::prelude::*;
@@ -76,79 +76,102 @@ fn run_benchmark(
                         let mut backpressure_handle = request.backpressure_handle().cloned();
                         if enable_backpressure {
                             if let Some(backpressure_handle) = backpressure_handle.as_mut() {
-                                let initial_read_window_size = client.initial_read_window_size().expect("initial size always set when backpressure is enabled");
+                                let initial_read_window_size = client
+                                    .initial_read_window_size()
+                                    .expect("initial size always set when backpressure is enabled");
                                 backpressure_handle.ensure_read_window(initial_read_window_size as u64);
                             }
                         }
 
                         let mut request = pin!(request);
+                        let mut part_buffer: Vec<GetBodyPart> = Vec::new();
+                        const BUFFER_SIZE: usize = 4; // Number of parts to buffer before processing
+
+                        let mut process_buffered_parts = |parts: &mut Vec<GetBodyPart>| {
+                            if parts.is_empty() {
+                                return;
+                            }
+
+                            if enable_parallel_chunking {
+                                let chunking_start = Instant::now();
+                                let mut total_chunks = 0usize;
+                                for part in parts.iter() {
+                                    total_chunks += (part.data.len() + chunk_size - 1) / chunk_size;
+                                }
+
+                                // Process all parts in parallel
+                                if enable_checksumming {
+                                    let _checksums: Vec<_> = parts
+                                        .par_iter()
+                                        .flat_map(|part| {
+                                            let data_len = part.data.len();
+                                            let num_chunks = (data_len + chunk_size - 1) / chunk_size;
+                                            (0..num_chunks).into_par_iter().map(move |i| {
+                                                let start = i * chunk_size;
+                                                let end = std::cmp::min(start + chunk_size, data_len);
+                                                let chunk = part.data.slice(start..end);
+                                                black_box(crc32c::checksum(&chunk))
+                                            })
+                                        })
+                                        .collect();
+                                } else {
+                                    parts.par_iter().for_each(|part| {
+                                        let data_len = part.data.len();
+                                        let num_chunks = (data_len + chunk_size - 1) / chunk_size;
+                                        (0..num_chunks).into_par_iter().for_each(|i| {
+                                            let start = i * chunk_size;
+                                            let end = std::cmp::min(start + chunk_size, data_len);
+                                            let chunk = part.data.slice(start..end);
+                                            black_box(chunk.len());
+                                        });
+                                    });
+                                }
+
+                                let chunking_duration = chunking_start.elapsed();
+                                let total_bytes: usize = parts.iter().map(|p| p.data.len()).sum();
+                                tracing::info!(
+                                    target: "benchmarking_instrumentation",
+                                    received_obj_len = ?received_obj_len,
+                                    buffered_parts = parts.len(),
+                                    total_bytes = total_bytes,
+                                    chunking_duration_us = chunking_duration.as_micros(),
+                                    chunks_count = total_chunks,
+                                    "consuming buffered parts with parallel chunking",
+                                );
+                            } else {
+                                for part in parts.iter() {
+                                    tracing::info!(
+                                        target: "benchmarking_instrumentation",
+                                        received_obj_len = ?received_obj_len,
+                                        part_len = part.data.len(),
+                                        "consuming buffered part without chunking",
+                                    );
+                                }
+                            }
+
+                            // Update counters and handle backpressure for all buffered parts
+                            for part in parts.iter() {
+                                let part_len = part.data.len();
+                                received_size_clone.fetch_add(part_len as u64, Ordering::SeqCst);
+                                received_obj_len += part_len as u64;
+                            }
+
+                            parts.clear();
+                        };
+
                         while Instant::now() < timeout {
                             match request.next().await {
                                 Some(Ok(part)) => {
                                     let part_len = part.data.len();
-
-                                    if enable_parallel_chunking {
-                                        // Parallel chunking with rayon for both slicing and processing
-                                        let chunking_start = Instant::now();
-                                        let data_len = part.data.len();
-                                        let num_chunks = (data_len + chunk_size - 1) / chunk_size;
-
-                                        // Use rayon to both generate chunks and process them in parallel
-                                        if enable_checksumming {
-                                            let _checksums: Vec<_> = (0..num_chunks)
-                                                .into_par_iter()
-                                                .map(|i| {
-                                                    let start = i * chunk_size;
-                                                    let end = std::cmp::min(start + chunk_size, data_len);
-                                                    let chunk = part.data.slice(start..end);
-                                                    black_box(crc32c::checksum(&chunk))
-                                                })
-                                                .collect();
-                                        } else {
-                                            (0..num_chunks)
-                                                .into_par_iter()
-                                                .for_each(|i| {
-                                                    let start = i * chunk_size;
-                                                    let end = std::cmp::min(start + chunk_size, data_len);
-                                                    let chunk = part.data.slice(start..end);
-                                                    // Just access the chunk data without computing checksum
-                                                    black_box(chunk.len());
-                                                });
-                                        }
-
-                                        let chunking_duration = chunking_start.elapsed();
-                                        tracing::info!(
-                                            target: "benchmarking_instrumentation",
-                                            received_obj_len = ?received_obj_len,
-                                            part_len = part_len,
-                                            chunking_duration_us = chunking_duration.as_micros(),
-                                            chunks_count = num_chunks,
-                                            "consuming data with parallel chunking and slicing",
-                                        );
-                                    } else {
-                                        tracing::info!(
-                                            target: "benchmarking_instrumentation",
-                                            received_obj_len = ?received_obj_len,
-                                            part_len = part_len,
-                                            "consuming data without chunking",
-                                        );
-                                    }
-
-                                    received_size_clone.fetch_add(part_len as u64, Ordering::SeqCst);
-                                    received_obj_len += part_len as u64;
+                                    part_buffer.push(part);
                                     if enable_backpressure {
                                         if let Some(backpressure_handle) = backpressure_handle.as_mut() {
-                                            tracing::info!(
-                                                target: "benchmarking_instrumentation",
-                                                preferred_read_window_size = ?client.initial_read_window_size(),
-                                                prev_read_window_end_offset = ?(client.initial_read_window_size().unwrap() as u64 + received_obj_len - part_len as u64),
-                                                new_read_window_end_offset = ?(client.initial_read_window_size().unwrap() as u64 + received_obj_len),
-                                                part_len = part_len,
-                                                "advancing read window",
-                                            );
-
                                             backpressure_handle.increment_read_window(part_len);
                                         }
+                                    }
+                                    // Process buffered parts when we have enough
+                                    if part_buffer.len() >= BUFFER_SIZE {
+                                        process_buffered_parts(&mut part_buffer);
                                     }
                                 }
                                 Some(Err(e)) => {
@@ -158,6 +181,9 @@ fn run_benchmark(
                                 _ => break,
                             }
                         }
+
+                        // Process any remaining buffered parts
+                        process_buffered_parts(&mut part_buffer);
                     })
                 });
             }
