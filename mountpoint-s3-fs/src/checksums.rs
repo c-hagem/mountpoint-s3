@@ -8,7 +8,7 @@ use mountpoint_s3_client::checksums::crc32c::{self, Crc32c};
 use thiserror::Error;
 
 /// Check if checksums are disabled via environment variable
-fn checksums_disabled() -> bool {
+pub fn checksums_disabled() -> bool {
     std::env::var("MOUNTPOINT_EXPERIMENTAL_DISABLE_CHECKSUMS").is_ok()
 }
 

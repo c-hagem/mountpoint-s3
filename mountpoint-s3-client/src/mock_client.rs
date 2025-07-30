@@ -643,22 +643,57 @@ impl MockObject {
                     // Use memory pool to allocate buffer
                     let mut buffer = pool.get_buffer(size, MetaRequestType::Default);
                     let offs = (offset as usize + seed as usize) % RAMP_MODULUS;
-                    let mut pos = 0;
-                    while size > 0 {
-                        let nbyte = size.min(RAMP_BUFFER_SIZE);
-                        buffer[pos..pos + nbyte].copy_from_slice(&RAMP_BYTES[offs..offs + nbyte]);
-                        pos += nbyte;
-                        size -= nbyte;
+
+                    // Optimized path for 8MB (common case) - fully unrolled
+                    if size == 8 * 1024 * 1024 {
+                        buffer[0..RAMP_BUFFER_SIZE].copy_from_slice(&RAMP_BYTES[offs..offs + RAMP_BUFFER_SIZE]);
+                        buffer[RAMP_BUFFER_SIZE..2 * RAMP_BUFFER_SIZE]
+                            .copy_from_slice(&RAMP_BYTES[offs..offs + RAMP_BUFFER_SIZE]);
+                        buffer[2 * RAMP_BUFFER_SIZE..3 * RAMP_BUFFER_SIZE]
+                            .copy_from_slice(&RAMP_BYTES[offs..offs + RAMP_BUFFER_SIZE]);
+                        buffer[3 * RAMP_BUFFER_SIZE..4 * RAMP_BUFFER_SIZE]
+                            .copy_from_slice(&RAMP_BYTES[offs..offs + RAMP_BUFFER_SIZE]);
+                        buffer[4 * RAMP_BUFFER_SIZE..5 * RAMP_BUFFER_SIZE]
+                            .copy_from_slice(&RAMP_BYTES[offs..offs + RAMP_BUFFER_SIZE]);
+                        buffer[5 * RAMP_BUFFER_SIZE..6 * RAMP_BUFFER_SIZE]
+                            .copy_from_slice(&RAMP_BYTES[offs..offs + RAMP_BUFFER_SIZE]);
+                        buffer[6 * RAMP_BUFFER_SIZE..7 * RAMP_BUFFER_SIZE]
+                            .copy_from_slice(&RAMP_BYTES[offs..offs + RAMP_BUFFER_SIZE]);
+                        buffer[7 * RAMP_BUFFER_SIZE..8 * RAMP_BUFFER_SIZE]
+                            .copy_from_slice(&RAMP_BYTES[offs..offs + RAMP_BUFFER_SIZE]);
+                    } else {
+                        // General path with loop for other sizes
+                        let mut pos = 0;
+                        while size > 0 {
+                            let nbyte = size.min(RAMP_BUFFER_SIZE);
+                            buffer[pos..pos + nbyte].copy_from_slice(&RAMP_BYTES[offs..offs + nbyte]);
+                            pos += nbyte;
+                            size -= nbyte;
+                        }
                     }
                     buffer
                 } else {
                     // Fallback to regular allocation
                     let mut vec = Vec::with_capacity(size);
                     let offs = (offset as usize + seed as usize) % RAMP_MODULUS;
-                    while size > 0 {
-                        let nbyte = size.min(RAMP_BUFFER_SIZE);
-                        vec.extend_from_slice(&RAMP_BYTES[offs..offs + nbyte]);
-                        size -= nbyte;
+
+                    // Optimized path for 8MB (common case) - fully unrolled
+                    if size == 8 * 1024 * 1024 {
+                        vec.extend_from_slice(&RAMP_BYTES[offs..offs + RAMP_BUFFER_SIZE]);
+                        vec.extend_from_slice(&RAMP_BYTES[offs..offs + RAMP_BUFFER_SIZE]);
+                        vec.extend_from_slice(&RAMP_BYTES[offs..offs + RAMP_BUFFER_SIZE]);
+                        vec.extend_from_slice(&RAMP_BYTES[offs..offs + RAMP_BUFFER_SIZE]);
+                        vec.extend_from_slice(&RAMP_BYTES[offs..offs + RAMP_BUFFER_SIZE]);
+                        vec.extend_from_slice(&RAMP_BYTES[offs..offs + RAMP_BUFFER_SIZE]);
+                        vec.extend_from_slice(&RAMP_BYTES[offs..offs + RAMP_BUFFER_SIZE]);
+                        vec.extend_from_slice(&RAMP_BYTES[offs..offs + RAMP_BUFFER_SIZE]);
+                    } else {
+                        // General path with loop for other sizes
+                        while size > 0 {
+                            let nbyte = size.min(RAMP_BUFFER_SIZE);
+                            vec.extend_from_slice(&RAMP_BYTES[offs..offs + nbyte]);
+                            size -= nbyte;
+                        }
                     }
                     vec.into_boxed_slice()
                 }
