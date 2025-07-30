@@ -300,7 +300,6 @@ where
                 // Fully unrolled 8MB part processing (32 chunks of 256KB each)
                 // Create ChecksummedBytes - either with real checksums or dummy ones if disabled
                 // Compute real checksums explicitly for maximum performance
-                // Batch 1: Compute 4 checksums at once for better locality
                 let checksum1 = crc32c::checksum(&body.slice(0..262144));
                 let cb1 = ChecksummedBytes::new_from_inner_data(body.slice(0..262144), checksum1);
                 self.part_queue_producer
