@@ -294,293 +294,325 @@ where
             if body.len() == 8 * 1024 * 1024 && self.preferred_part_size == 256 * 1024 {
                 let curr_offset = offset;
 
+                // Iteration 1
                 let mut checksum_start = Instant::now();
                 let checksum1 = crc32c::checksum(&body.slice(0..262144));
                 let cb1 = ChecksummedBytes::new_from_inner_data(body.slice(0..262144), checksum1);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset, cb1)));
+                let part1 = Part::new(self.object_id.clone(), curr_offset + 0, cb1);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part1));
 
+                // Iteration 2
                 checksum_start = Instant::now();
                 let checksum2 = crc32c::checksum(&body.slice(262144..524288));
                 let cb2 = ChecksummedBytes::new_from_inner_data(body.slice(262144..524288), checksum2);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 262144, cb2)));
+                let part2 = Part::new(self.object_id.clone(), curr_offset + 262144, cb2);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part2));
 
+                // Iteration 3
                 checksum_start = Instant::now();
                 let checksum3 = crc32c::checksum(&body.slice(524288..786432));
                 let cb3 = ChecksummedBytes::new_from_inner_data(body.slice(524288..786432), checksum3);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 524288, cb3)));
+                let part3 = Part::new(self.object_id.clone(), curr_offset + 524288, cb3);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part3));
 
+                // Iteration 4
                 checksum_start = Instant::now();
                 let checksum4 = crc32c::checksum(&body.slice(786432..1048576));
                 let cb4 = ChecksummedBytes::new_from_inner_data(body.slice(786432..1048576), checksum4);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 786432, cb4)));
+                let part4 = Part::new(self.object_id.clone(), curr_offset + 786432, cb4);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part4));
 
+                // Iteration 5
                 checksum_start = Instant::now();
                 let checksum5 = crc32c::checksum(&body.slice(1048576..1310720));
                 let cb5 = ChecksummedBytes::new_from_inner_data(body.slice(1048576..1310720), checksum5);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 1048576, cb5)));
+                let part5 = Part::new(self.object_id.clone(), curr_offset + 1048576, cb5);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part5));
 
+                // Iteration 6
                 checksum_start = Instant::now();
                 let checksum6 = crc32c::checksum(&body.slice(1310720..1572864));
                 let cb6 = ChecksummedBytes::new_from_inner_data(body.slice(1310720..1572864), checksum6);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 1310720, cb6)));
+                let part6 = Part::new(self.object_id.clone(), curr_offset + 1310720, cb6);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part6));
 
+                // Iteration 7
                 checksum_start = Instant::now();
                 let checksum7 = crc32c::checksum(&body.slice(1572864..1835008));
                 let cb7 = ChecksummedBytes::new_from_inner_data(body.slice(1572864..1835008), checksum7);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 1572864, cb7)));
+                let part7 = Part::new(self.object_id.clone(), curr_offset + 1572864, cb7);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part7));
 
+                // Iteration 8
                 checksum_start = Instant::now();
                 let checksum8 = crc32c::checksum(&body.slice(1835008..2097152));
                 let cb8 = ChecksummedBytes::new_from_inner_data(body.slice(1835008..2097152), checksum8);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 1835008, cb8)));
+                let part8 = Part::new(self.object_id.clone(), curr_offset + 1835008, cb8);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part8));
 
+                // Iteration 9
                 checksum_start = Instant::now();
                 let checksum9 = crc32c::checksum(&body.slice(2097152..2359296));
                 let cb9 = ChecksummedBytes::new_from_inner_data(body.slice(2097152..2359296), checksum9);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 2097152, cb9)));
+                let part9 = Part::new(self.object_id.clone(), curr_offset + 2097152, cb9);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part9));
 
+                // Iteration 10
                 checksum_start = Instant::now();
                 let checksum10 = crc32c::checksum(&body.slice(2359296..2621440));
                 let cb10 = ChecksummedBytes::new_from_inner_data(body.slice(2359296..2621440), checksum10);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 2359296, cb10)));
+                let part10 = Part::new(self.object_id.clone(), curr_offset + 2359296, cb10);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part10));
 
+                // Iteration 11
                 checksum_start = Instant::now();
                 let checksum11 = crc32c::checksum(&body.slice(2621440..2883584));
                 let cb11 = ChecksummedBytes::new_from_inner_data(body.slice(2621440..2883584), checksum11);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 2621440, cb11)));
+                let part11 = Part::new(self.object_id.clone(), curr_offset + 2621440, cb11);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part11));
 
+                // Iteration 12
                 checksum_start = Instant::now();
                 let checksum12 = crc32c::checksum(&body.slice(2883584..3145728));
                 let cb12 = ChecksummedBytes::new_from_inner_data(body.slice(2883584..3145728), checksum12);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 2883584, cb12)));
+                let part12 = Part::new(self.object_id.clone(), curr_offset + 2883584, cb12);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part12));
 
+                // Iteration 13
                 checksum_start = Instant::now();
                 let checksum13 = crc32c::checksum(&body.slice(3145728..3407872));
                 let cb13 = ChecksummedBytes::new_from_inner_data(body.slice(3145728..3407872), checksum13);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 3145728, cb13)));
+                let part13 = Part::new(self.object_id.clone(), curr_offset + 3145728, cb13);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part13));
 
+                // Iteration 14
                 checksum_start = Instant::now();
                 let checksum14 = crc32c::checksum(&body.slice(3407872..3670016));
                 let cb14 = ChecksummedBytes::new_from_inner_data(body.slice(3407872..3670016), checksum14);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 3407872, cb14)));
+                let part14 = Part::new(self.object_id.clone(), curr_offset + 3407872, cb14);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part14));
 
+                // Iteration 15
                 checksum_start = Instant::now();
                 let checksum15 = crc32c::checksum(&body.slice(3670016..3932160));
                 let cb15 = ChecksummedBytes::new_from_inner_data(body.slice(3670016..3932160), checksum15);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 3670016, cb15)));
+                let part15 = Part::new(self.object_id.clone(), curr_offset + 3670016, cb15);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part15));
 
+                // Iteration 16
                 checksum_start = Instant::now();
                 let checksum16 = crc32c::checksum(&body.slice(3932160..4194304));
                 let cb16 = ChecksummedBytes::new_from_inner_data(body.slice(3932160..4194304), checksum16);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 3932160, cb16)));
+                let part16 = Part::new(self.object_id.clone(), curr_offset + 3932160, cb16);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part16));
 
+                // Iteration 17
                 checksum_start = Instant::now();
                 let checksum17 = crc32c::checksum(&body.slice(4194304..4456448));
                 let cb17 = ChecksummedBytes::new_from_inner_data(body.slice(4194304..4456448), checksum17);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 4194304, cb17)));
+                let part17 = Part::new(self.object_id.clone(), curr_offset + 4194304, cb17);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part17));
 
+                // Iteration 18
                 checksum_start = Instant::now();
                 let checksum18 = crc32c::checksum(&body.slice(4456448..4718592));
                 let cb18 = ChecksummedBytes::new_from_inner_data(body.slice(4456448..4718592), checksum18);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 4456448, cb18)));
+                let part18 = Part::new(self.object_id.clone(), curr_offset + 4456448, cb18);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part18));
 
+                // Iteration 19
                 checksum_start = Instant::now();
                 let checksum19 = crc32c::checksum(&body.slice(4718592..4980736));
                 let cb19 = ChecksummedBytes::new_from_inner_data(body.slice(4718592..4980736), checksum19);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 4718592, cb19)));
+                let part19 = Part::new(self.object_id.clone(), curr_offset + 4718592, cb19);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part19));
 
+                // Iteration 20
                 checksum_start = Instant::now();
                 let checksum20 = crc32c::checksum(&body.slice(4980736..5242880));
                 let cb20 = ChecksummedBytes::new_from_inner_data(body.slice(4980736..5242880), checksum20);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 4980736, cb20)));
+                let part20 = Part::new(self.object_id.clone(), curr_offset + 4980736, cb20);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part20));
 
+                // Iteration 21
                 checksum_start = Instant::now();
                 let checksum21 = crc32c::checksum(&body.slice(5242880..5505024));
                 let cb21 = ChecksummedBytes::new_from_inner_data(body.slice(5242880..5505024), checksum21);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 5242880, cb21)));
+                let part21 = Part::new(self.object_id.clone(), curr_offset + 5242880, cb21);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part21));
 
+                // Iteration 22
                 checksum_start = Instant::now();
                 let checksum22 = crc32c::checksum(&body.slice(5505024..5767168));
                 let cb22 = ChecksummedBytes::new_from_inner_data(body.slice(5505024..5767168), checksum22);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 5505024, cb22)));
+                let part22 = Part::new(self.object_id.clone(), curr_offset + 5505024, cb22);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part22));
 
+                // Iteration 23
                 checksum_start = Instant::now();
                 let checksum23 = crc32c::checksum(&body.slice(5767168..6029312));
                 let cb23 = ChecksummedBytes::new_from_inner_data(body.slice(5767168..6029312), checksum23);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 5767168, cb23)));
+                let part23 = Part::new(self.object_id.clone(), curr_offset + 5767168, cb23);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part23));
 
+                // Iteration 24
                 checksum_start = Instant::now();
                 let checksum24 = crc32c::checksum(&body.slice(6029312..6291456));
                 let cb24 = ChecksummedBytes::new_from_inner_data(body.slice(6029312..6291456), checksum24);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 6029312, cb24)));
+                let part24 = Part::new(self.object_id.clone(), curr_offset + 6029312, cb24);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part24));
 
+                // Iteration 25
                 checksum_start = Instant::now();
                 let checksum25 = crc32c::checksum(&body.slice(6291456..6553600));
                 let cb25 = ChecksummedBytes::new_from_inner_data(body.slice(6291456..6553600), checksum25);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 6291456, cb25)));
+                let part25 = Part::new(self.object_id.clone(), curr_offset + 6291456, cb25);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part25));
 
+                // Iteration 26
                 checksum_start = Instant::now();
                 let checksum26 = crc32c::checksum(&body.slice(6553600..6815744));
                 let cb26 = ChecksummedBytes::new_from_inner_data(body.slice(6553600..6815744), checksum26);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 6553600, cb26)));
+                let part26 = Part::new(self.object_id.clone(), curr_offset + 6553600, cb26);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part26));
 
+                // Iteration 27
                 checksum_start = Instant::now();
                 let checksum27 = crc32c::checksum(&body.slice(6815744..7077888));
                 let cb27 = ChecksummedBytes::new_from_inner_data(body.slice(6815744..7077888), checksum27);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 6815744, cb27)));
+                let part27 = Part::new(self.object_id.clone(), curr_offset + 6815744, cb27);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part27));
 
+                // Iteration 28
                 checksum_start = Instant::now();
                 let checksum28 = crc32c::checksum(&body.slice(7077888..7340032));
                 let cb28 = ChecksummedBytes::new_from_inner_data(body.slice(7077888..7340032), checksum28);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 7077888, cb28)));
+                let part28 = Part::new(self.object_id.clone(), curr_offset + 7077888, cb28);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part28));
 
+                // Iteration 29
                 checksum_start = Instant::now();
                 let checksum29 = crc32c::checksum(&body.slice(7340032..7602176));
                 let cb29 = ChecksummedBytes::new_from_inner_data(body.slice(7340032..7602176), checksum29);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 7340032, cb29)));
+                let part29 = Part::new(self.object_id.clone(), curr_offset + 7340032, cb29);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part29));
 
+                // Iteration 30
                 checksum_start = Instant::now();
                 let checksum30 = crc32c::checksum(&body.slice(7602176..7864320));
                 let cb30 = ChecksummedBytes::new_from_inner_data(body.slice(7602176..7864320), checksum30);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 7602176, cb30)));
+                let part30 = Part::new(self.object_id.clone(), curr_offset + 7602176, cb30);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part30));
 
+                // Iteration 31
                 checksum_start = Instant::now();
                 let checksum31 = crc32c::checksum(&body.slice(7864320..8126464));
                 let cb31 = ChecksummedBytes::new_from_inner_data(body.slice(7864320..8126464), checksum31);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 7864320, cb31)));
+                let part31 = Part::new(self.object_id.clone(), curr_offset + 7864320, cb31);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part31));
 
+                // Iteration 32
                 checksum_start = Instant::now();
                 let checksum32 = crc32c::checksum(&body.slice(8126464..8388608));
                 let cb32 = ChecksummedBytes::new_from_inner_data(body.slice(8126464..8388608), checksum32);
-                self.part_queue_producer
-                    .push(Ok(Part::new(self.object_id.clone(), curr_offset + 8126464, cb32)));
+                let part32 = Part::new(self.object_id.clone(), curr_offset + 8126464, cb32);
                 metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
                     .record(checksum_start.elapsed().as_micros() as f64);
-                metrics::counter!("prefetch.checksum_computation_count", "path" => "fast").increment(1);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
+                self.part_queue_producer.push(Ok(part32));
             } else {
                 // pre-split the body into multiple parts as suggested by preferred part size
                 // in order to avoid validating checksum on large parts at read.
