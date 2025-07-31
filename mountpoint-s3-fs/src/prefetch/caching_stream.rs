@@ -290,7 +290,9 @@ where
                 buffer.len() < block_size as usize,
                 "buffer should be flushed when we get a full block"
             );
-            let GetBodyPart { offset, data: mut body } = next?;
+            let GetBodyPart {
+                offset, data: mut body, ..
+            } = next?;
             let expected_offset = self.block_offset + buffer.len() as u64;
             if offset != expected_offset {
                 warn!(key, offset, expected_offset, "wrong offset for GetObject body part");

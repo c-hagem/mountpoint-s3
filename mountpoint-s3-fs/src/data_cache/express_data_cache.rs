@@ -202,7 +202,7 @@ where
         pin_mut!(result);
         while let Some(chunk) = result.next().await {
             match chunk {
-                Ok(GetBodyPart { offset, data: body }) => {
+                Ok(GetBodyPart { offset, data: body, .. }) => {
                     if offset != buffer.len() as u64 {
                         return Err(DataCacheError::InvalidBlockOffset);
                     }

@@ -2,6 +2,7 @@ use async_stream::try_stream;
 use futures::task::SpawnExt;
 use futures::{Stream, StreamExt, pin_mut};
 use mountpoint_s3_client::ObjectClient;
+use mountpoint_s3_client::types::ChunkedChecksum;
 use mountpoint_s3_client::types::{ClientBackpressureHandle, GetBodyPart, GetObjectParams, GetObjectResponse};
 use std::marker::{Send, Sync};
 use std::sync::Arc;
@@ -289,18 +290,55 @@ where
     ) -> Result<(), PrefetchReadError<E>> {
         pin_mut!(request_stream);
         while let Some(next) = request_stream.next().await {
-            let GetBodyPart { offset, data: mut body } = next?;
+            let GetBodyPart {
+                offset,
+                data: mut body,
+                chunk_checksums,
+            } = next?;
             // pre-split the body into multiple parts as suggested by preferred part size
             // in order to avoid validating checksum on large parts at read.
             let mut curr_offset = offset;
             let alignment = self.preferred_part_size;
+
+            // Check if the first offset is aligned - if so, we can use CRT checksums
+            let use_crt_checksums = offset % alignment as u64 == 0 && !chunk_checksums.is_empty();
+            let mut checksum_iter = chunk_checksums.iter();
+
+            if use_crt_checksums {
+                trace!(
+                    "Using {} CRT checksums for aligned request at offset {}",
+                    chunk_checksums.len(),
+                    offset
+                );
+            } else {
+                trace!(
+                    "Computing checksums locally - offset {} not aligned or no CRT checksums available",
+                    offset
+                );
+            }
+
             while !body.is_empty() {
                 let distance_to_align = alignment - (curr_offset % alignment as u64) as usize;
                 let chunk_size = distance_to_align.min(body.len());
                 let chunk = body.split_to(chunk_size);
-                // S3 doesn't provide checksum for us if the request range is not aligned to
-                // object part boundaries, so we're computing our own checksum here.
-                let checksum_bytes = ChecksummedBytes::new(chunk);
+
+                let checksum_bytes = if use_crt_checksums {
+                    // Use pre-computed checksums from CRT in order
+                    if let Some(crt_checksum) = checksum_iter.next() {
+                        ChecksummedBytes::new_from_inner_data(
+                            chunk,
+                            mountpoint_s3_client::checksums::crc32c::Crc32c::new(crt_checksum.checksum_data),
+                        )
+                    } else {
+                        // Fallback to computing our own if we run out of CRT checksums
+                        ChecksummedBytes::new(chunk)
+                    }
+                } else {
+                    // S3 doesn't provide checksum for us if the request range is not aligned to
+                    // object part boundaries, so we're computing our own checksum here.
+                    ChecksummedBytes::new(chunk)
+                };
+
                 let part = Part::new(self.object_id.clone(), curr_offset, checksum_bytes);
                 curr_offset += part.len() as u64;
                 self.part_queue_producer.push(Ok(part));

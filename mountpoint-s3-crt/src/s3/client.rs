@@ -13,6 +13,7 @@ use crate::{CrtError, ToAwsByteCursor, aws_byte_cursor_as_slice};
 use futures::Future;
 use mountpoint_s3_crt_sys::*;
 
+use log::debug;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Debug, Display};
 use std::marker::PhantomPinned;
@@ -27,6 +28,17 @@ use std::time::Duration;
 use super::buffer::Buffer;
 use super::pool::CrtBufferPoolFactory;
 use super::s3_library_init;
+
+/// Represents a chunk checksum computed over a range of data
+#[derive(Debug, Clone)]
+pub struct ChunkedChecksum {
+    /// Starting offset of the chunk
+    pub offset_start: u64,
+    /// Ending offset of the chunk
+    pub offset_end: u64,
+    /// CRC32C checksum of the chunk data
+    pub checksum_data: u32,
+}
 
 /// A client for high-throughput access to Amazon S3
 #[derive(Debug)]
@@ -240,7 +252,7 @@ type TelemetryCallback = Box<dyn Fn(&RequestMetrics) + Send>;
 type HeadersCallback = Box<dyn FnMut(&Headers, i32) + Send>;
 
 /// Callback for when part of the response body is received. Given (range_start, data).
-type BodyExCallback = Box<dyn FnMut(u64, &Buffer) + Send>;
+type BodyExCallback = Box<dyn FnMut(u64, &Buffer, Vec<ChunkedChecksum>) + Send>;
 
 /// Callback for reviewing an upload before it completes.
 type UploadReviewCallback = Box<dyn FnOnce(UploadReview) -> bool + Send>;
@@ -449,6 +461,20 @@ impl<'a> MetaRequestOptions<'a> {
     pub fn on_body(&mut self, callback: impl FnMut(u64, &Buffer) + Send + 'static) -> &mut Self {
         // SAFETY: we aren't moving out of the struct.
         let options = unsafe { Pin::get_unchecked_mut(Pin::as_mut(&mut self.0)) };
+        let mut callback = callback;
+        options.on_body_ex = Some(Box::new(move |offset, buffer, _chunk_checksums| {
+            callback(offset, buffer);
+        }));
+        self
+    }
+
+    /// Provide a callback to run when the request's body arrives, including chunk checksums.
+    pub fn on_body_with_checksums(
+        &mut self,
+        callback: impl FnMut(u64, &Buffer, Vec<ChunkedChecksum>) + Send + 'static,
+    ) -> &mut Self {
+        // SAFETY: we aren't moving out of the struct.
+        let options = unsafe { Pin::get_unchecked_mut(Pin::as_mut(&mut self.0)) };
         options.on_body_ex = Some(Box::new(callback));
         self
     }
@@ -502,6 +528,15 @@ impl<'a> MetaRequestOptions<'a> {
         // SAFETY: We ensure that the cursor points to data that lives
         // as long as the options struct
         options.inner.copy_source_uri = unsafe { options.copy_source_uri.as_mut().unwrap().as_aws_byte_cursor() };
+        self
+    }
+
+    /// Enable CRT checksum chunking
+    pub fn enable_checksum_chunking(&mut self, chunk_size: u64) -> &mut Self {
+        // SAFETY: we aren't moving out of the struct.
+        let options = unsafe { Pin::get_unchecked_mut(Pin::as_mut(&mut self.0)) };
+        options.inner.chunked_checksum_size = chunk_size;
+        options.inner.compute_chunked_checksums = true;
         self
     }
 }
@@ -601,9 +636,34 @@ unsafe extern "C" fn meta_request_receive_body_callback_ex(
     let user_data = unsafe { MetaRequestOptionsInner::from_user_data_ptr(user_data) };
 
     if let Some(callback) = user_data.on_body_ex.as_mut() {
+        // Extract chunk checksums from CRT
+        let chunk_checksums = unsafe {
+            if !meta.chunked_checksums.is_null() {
+                let array_list = &*meta.chunked_checksums;
+                let mut checksums = Vec::with_capacity(array_list.length);
+
+                for i in 0..array_list.length {
+                    // SAFETY: array_list.data is valid for array_list.length elements
+                    let chunk_ptr = (array_list.data as *const aws_s3_chunked_checksum).add(i);
+                    let chunk = &*chunk_ptr;
+
+                    checksums.push(ChunkedChecksum {
+                        offset_start: chunk.offset_start,
+                        offset_end: chunk.offset_end,
+                        checksum_data: chunk.checksum_data,
+                    });
+                }
+
+                debug!("Extracted {} chunk checksums from CRT", checksums.len());
+                checksums
+            } else {
+                Vec::new()
+            }
+        };
+
         // SAFETY: `body` and `meta.ticket` outlive `buffer`.
         let buffer = unsafe { Buffer::new_unchecked(&*body, &meta.ticket) };
-        callback(meta.range_start, &buffer);
+        callback(meta.range_start, &buffer, chunk_checksums);
     }
 
     AWS_OP_SUCCESS

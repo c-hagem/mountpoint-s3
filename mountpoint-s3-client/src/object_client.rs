@@ -783,12 +783,24 @@ pub enum ObjectChecksumError {
     HeadersError(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
+/// Represents a chunk checksum computed over a range of data
+#[derive(Debug, Clone)]
+pub struct ChunkedChecksum {
+    /// Starting offset of the chunk
+    pub offset_start: u64,
+    /// Ending offset of the chunk
+    pub offset_end: u64,
+    /// CRC32C checksum of the chunk data
+    pub checksum_data: u32,
+}
+
 /// A single element of a [`get_object`](ObjectClient::get_object) response stream is a pair of
 /// offset within the object and the bytes starting at that offset.
 #[derive(Debug)]
 pub struct GetBodyPart {
     pub offset: u64,
     pub data: Bytes,
+    pub chunk_checksums: Vec<ChunkedChecksum>,
 }
 
 /// A streaming put request which allows callers to asynchronously write the body of the request.

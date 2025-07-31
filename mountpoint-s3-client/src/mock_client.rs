@@ -752,7 +752,12 @@ impl MockGetObjectResponse {
     pub async fn collect(mut self) -> ObjectClientResult<Box<[u8]>, GetObjectError, MockClientError> {
         let mut next_offset = None;
         let mut body = vec![];
-        while let Some(GetBodyPart { offset, data }) = self.next().await.transpose()? {
+        while let Some(GetBodyPart {
+            offset,
+            data,
+            chunk_checksums,
+        }) = self.next().await.transpose()?
+        {
             assert!(next_offset.as_ref().map(|no| offset == *no).unwrap_or(true));
             body.extend_from_slice(&data);
             next_offset = Some(offset + data.len() as u64);
@@ -802,6 +807,7 @@ impl Stream for MockGetObjectResponse {
         let result = GetBodyPart {
             offset: self.next_offset,
             data: next_part.into(),
+            chunk_checksums: Vec::new(),
         };
         self.next_offset += next_read_size as u64;
         self.length -= next_read_size;

@@ -76,7 +76,7 @@ impl S3CrtClient {
 
             let on_mpu_created_sender = Arc::new(Mutex::new(Some(mpu_created_sender)));
             let on_failure_sender = on_mpu_created_sender.clone();
-            self.inner.meta_request_with_callbacks(
+            self.inner.meta_request_with_callbacks_no_checksums(
                 options,
                 span,
                 move |metrics| {

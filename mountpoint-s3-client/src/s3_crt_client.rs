@@ -28,8 +28,8 @@ use mountpoint_s3_crt::io::retry_strategy::{ExponentialBackoffJitterMode, RetryS
 use mountpoint_s3_crt::io::stream::InputStream;
 use mountpoint_s3_crt::s3::buffer::Buffer;
 use mountpoint_s3_crt::s3::client::{
-    BufferPoolUsageStats, ChecksumConfig, Client, ClientConfig, MetaRequest, MetaRequestOptions, MetaRequestResult,
-    MetaRequestType, RequestMetrics, RequestType, init_signing_config,
+    BufferPoolUsageStats, ChecksumConfig, ChunkedChecksum as CrtChunkedChecksum, Client, ClientConfig, MetaRequest,
+    MetaRequestOptions, MetaRequestResult, MetaRequestType, RequestMetrics, RequestType, init_signing_config,
 };
 
 use async_trait::async_trait;
@@ -44,6 +44,7 @@ use crate::checksums::{crc32_to_base64, crc32c_to_base64, crc64nvme_to_base64, s
 use crate::endpoint_config::EndpointError;
 use crate::endpoint_config::{self, EndpointConfig};
 use crate::error_metadata::{ClientErrorMetadata, ProvideErrorMetadata};
+use crate::object_client::ChunkedChecksum as ClientChunkedChecksum;
 use crate::object_client::*;
 use crate::user_agent::UserAgent;
 
@@ -548,6 +549,30 @@ impl S3CrtClientInner {
     ///
     /// The `parse_meta_request_error` callback is invoked on failed requests. It should return `None`
     /// if it doesn't have a request-specific failure reason. The client will apply some generic error
+    /// Compatibility wrapper for meta_request_with_callbacks that ignores chunk checksums
+    #[allow(clippy::too_many_arguments)]
+    fn meta_request_with_callbacks_no_checksums<E: std::error::Error + Send + 'static>(
+        &self,
+        options: MetaRequestOptions,
+        request_span: Span,
+        on_request_finish: impl Fn(&RequestMetrics) + Send + 'static,
+        on_headers: impl FnMut(&Headers, i32) + Send + 'static,
+        mut on_body: impl FnMut(u64, &Buffer) + Send + 'static,
+        parse_meta_request_error: impl FnOnce(&MetaRequestResult) -> Option<E> + Send + 'static,
+        on_meta_request_result: impl FnOnce(ObjectClientResult<(), E, S3RequestError>) + Send + 'static,
+    ) -> Result<CancellingMetaRequest, S3RequestError> {
+        self.meta_request_with_callbacks(
+            options,
+            request_span,
+            on_request_finish,
+            on_headers,
+            move |offset, buffer, _chunk_checksums| on_body(offset, buffer),
+            parse_meta_request_error,
+            on_meta_request_result,
+        )
+    }
+
+    /// Create a meta request with callbacks, including chunk checksums support
     /// parsing in this case (e.g. for permissions errors).
     #[allow(clippy::too_many_arguments)]
     fn meta_request_with_callbacks<E: std::error::Error + Send + 'static>(
@@ -556,7 +581,7 @@ impl S3CrtClientInner {
         request_span: Span,
         on_request_finish: impl Fn(&RequestMetrics) + Send + 'static,
         mut on_headers: impl FnMut(&Headers, i32) + Send + 'static,
-        mut on_body: impl FnMut(u64, &Buffer) + Send + 'static,
+        mut on_body: impl FnMut(u64, &Buffer, Vec<ClientChunkedChecksum>) + Send + 'static,
         parse_meta_request_error: impl FnOnce(&MetaRequestResult) -> Option<E> + Send + 'static,
         on_meta_request_result: impl FnOnce(ObjectClientResult<(), E, S3RequestError>) + Send + 'static,
     ) -> Result<CancellingMetaRequest, S3RequestError> {
@@ -620,7 +645,7 @@ impl S3CrtClientInner {
             .on_headers(move |headers, response_status| {
                 (on_headers)(headers, response_status);
             })
-            .on_body(move |range_start, data| {
+            .on_body_with_checksums(move |range_start, data, chunk_checksums| {
                 let _guard = span_body.enter();
 
                 if first_body_part.compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst).ok() == Some(true) {
@@ -630,9 +655,19 @@ impl S3CrtClientInner {
                 }
                 total_bytes.fetch_add(data.len() as u64, Ordering::SeqCst);
 
-                trace!(start = range_start, length = data.len(), "body part received");
+                // Convert CRT chunk checksums to client chunk checksums
+                let client_chunk_checksums: Vec<ClientChunkedChecksum> = chunk_checksums
+                    .into_iter()
+                    .map(|crt_checksum: CrtChunkedChecksum| ClientChunkedChecksum {
+                        offset_start: crt_checksum.offset_start,
+                        offset_end: crt_checksum.offset_end,
+                        checksum_data: crt_checksum.checksum_data,
+                    })
+                    .collect();
 
-                (on_body)(range_start, data);
+                trace!(start = range_start, length = data.len(), num_checksums = client_chunk_checksums.len(), "body part received");
+
+                (on_body)(range_start, data, client_chunk_checksums);
             })
             .on_finish(move |request_result| {
                 let _guard = span_finish.enter();
@@ -739,7 +774,7 @@ impl S3CrtClientInner {
         let body: Arc<Mutex<Vec<u8>>> = Default::default();
         let body_clone = Arc::clone(&body);
 
-        let meta_request = self.meta_request_with_callbacks(
+        let meta_request = self.meta_request_with_callbacks_no_checksums(
             options,
             request_span,
             |_| {},
@@ -777,7 +812,7 @@ impl S3CrtClientInner {
         let on_headers: Arc<Mutex<Option<Headers>>> = Default::default();
         let on_result = on_headers.clone();
 
-        let meta_request = self.meta_request_with_callbacks(
+        let meta_request = self.meta_request_with_callbacks_no_checksums(
             options,
             request_span,
             |_| {},
@@ -820,7 +855,7 @@ impl S3CrtClientInner {
     ) -> Result<S3MetaRequest<(), E>, S3RequestError> {
         let (tx, rx) = oneshot::channel::<ObjectClientResult<(), E, S3RequestError>>();
 
-        let meta_request = self.meta_request_with_callbacks(
+        let meta_request = self.meta_request_with_callbacks_no_checksums(
             options,
             request_span,
             |_| {},

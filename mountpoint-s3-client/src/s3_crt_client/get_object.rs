@@ -79,6 +79,9 @@ impl S3CrtClient {
             let mut options = message.into_options(S3Operation::GetObject);
             options.part_size(self.inner.read_part_size as u64);
 
+            // Enable CRT chcksum computation
+            options.enable_checksum_chunking(256 * 1024);
+
             let mut headers_sender = Some(event_sender.clone());
             let part_sender = event_sender.clone();
 
@@ -97,12 +100,17 @@ impl S3CrtClient {
                         }
                     }
                 },
-                move |offset, data| {
+                move |offset, data, chunk_checksums| {
                     let owned_buffer = data
                         .to_owned_buffer()
                         .expect("buffers returned from GetObject can always be acquired");
                     let bytes = Bytes::from_owner(owned_buffer);
-                    let body_part = GetBodyPart { offset, data: bytes };
+
+                    let body_part = GetBodyPart {
+                        offset,
+                        data: bytes,
+                        chunk_checksums,
+                    };
                     _ = part_sender.unbounded_send(S3GetObjectEvent::BodyPart(body_part));
                 },
                 parse_get_object_error,
