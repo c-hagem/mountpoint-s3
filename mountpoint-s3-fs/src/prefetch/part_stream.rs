@@ -6,6 +6,7 @@ use mountpoint_s3_client::checksums::crc32c::{self};
 use mountpoint_s3_client::types::{ClientBackpressureHandle, GetBodyPart, GetObjectParams, GetObjectResponse};
 use std::marker::{Send, Sync};
 use std::sync::Arc;
+use std::time::Instant;
 use std::{fmt::Debug, ops::Range};
 use tracing::{Instrument, debug_span, error, trace};
 
@@ -301,7 +302,11 @@ where
             if misalignment != 0 && !body.is_empty() {
                 let first_chunk_size = (alignment - misalignment).min(body.len());
                 let chunk = body.split_to(first_chunk_size);
+                let checksum_start = Instant::now();
                 let checksum_bytes = ChecksummedBytes::new(chunk);
+                metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
+                    .record(checksum_start.elapsed().as_micros() as f64);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
                 let part = Part::new(self.object_id.clone(), curr_offset, checksum_bytes);
                 curr_offset += part.len() as u64;
                 self.part_queue_producer.push(Ok(part));
@@ -315,12 +320,16 @@ where
 
                 let chunk = body.split_to(alignment);
                 // Compute checksum based on whether checksums are disabled
+                let checksum_start = Instant::now();
                 let checksum_bytes = if checksums_disabled() {
                     ChecksummedBytes::new_with_dummy_checksum(chunk)
                 } else {
                     let checksum = crc32c::checksum(&chunk);
                     ChecksummedBytes::new_from_inner_data(chunk, checksum)
                 };
+                metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
+                    .record(checksum_start.elapsed().as_micros() as f64);
+                metrics::counter!("prefetch.checksum_computation_count", "path" => "unaligned").increment(1);
                 let part = Part::new(self.object_id.clone(), curr_offset, checksum_bytes);
                 curr_offset += part.len() as u64;
                 self.part_queue_producer.push(Ok(part));
@@ -331,7 +340,10 @@ where
                 let chunk = body.split_to(body.len());
                 // S3 doesn't provide checksum for us if the request range is not aligned to
                 // object part boundaries, so we're computing our own checksum here.
+                let checksum_start = Instant::now();
                 let checksum_bytes = ChecksummedBytes::new(chunk);
+                metrics::histogram!("prefetch.checksum_computation_us", "path" => "fast")
+                    .record(checksum_start.elapsed().as_micros() as f64);
                 let part = Part::new(self.object_id.clone(), curr_offset, checksum_bytes);
                 self.part_queue_producer.push(Ok(part));
             }
