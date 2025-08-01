@@ -23,7 +23,7 @@ use std::pin::Pin;
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 use std::task::Waker;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::buffer::Buffer;
 use super::pool::CrtBufferPoolFactory;
@@ -637,24 +637,42 @@ unsafe extern "C" fn meta_request_receive_body_callback_ex(
 
     if let Some(callback) = user_data.on_body_ex.as_mut() {
         // Extract chunk checksums from CRT
+        // SAFETY: TODO
         let chunk_checksums = unsafe {
             if !meta.chunked_checksums.is_null() {
+                let start_total = Instant::now();
                 let array_list = &*meta.chunked_checksums;
+
+                // Time allocation
+                let start_alloc = Instant::now();
                 let mut checksums = Vec::with_capacity(array_list.length);
+                let alloc_time = start_alloc.elapsed();
 
-                for i in 0..array_list.length {
-                    // SAFETY: array_list.data is valid for array_list.length elements
-                    let chunk_ptr = (array_list.data as *const aws_s3_chunked_checksum).add(i);
-                    let chunk = &*chunk_ptr;
-
-                    checksums.push(ChunkedChecksum {
-                        offset_start: chunk.offset_start,
-                        offset_end: chunk.offset_end,
-                        checksum_data: chunk.checksum_data,
-                    });
+                // Time bulk copying
+                let start_copy = Instant::now();
+                if array_list.length > 0 {
+                    // SAFETY: Both ChunkedChecksum and aws_s3_chunked_checksum have identical memory layouts:
+                    // - offset_start: u64 / uint64_t
+                    // - offset_end: u64 / uint64_t
+                    // - checksum_data: u32 / uint32_t
+                    // We can safely bulk copy the entire array using ptr::copy_nonoverlapping
+                    checksums.set_len(array_list.length);
+                    std::ptr::copy_nonoverlapping(
+                        array_list.data as *const ChunkedChecksum,
+                        checksums.as_mut_ptr(),
+                        array_list.length,
+                    );
                 }
+                let copy_time = start_copy.elapsed();
+                let total_time = start_total.elapsed();
 
-                debug!("Extracted {} chunk checksums from CRT", checksums.len());
+                debug!(
+                    "Chunk checksum extraction: count={}, alloc_time={:?}, copy_time={:?}, total_time={:?}",
+                    checksums.len(),
+                    alloc_time,
+                    copy_time,
+                    total_time
+                );
                 checksums
             } else {
                 Vec::new()

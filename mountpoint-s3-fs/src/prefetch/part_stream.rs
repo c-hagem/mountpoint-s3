@@ -2,7 +2,6 @@ use async_stream::try_stream;
 use futures::task::SpawnExt;
 use futures::{Stream, StreamExt, pin_mut};
 use mountpoint_s3_client::ObjectClient;
-use mountpoint_s3_client::types::ChunkedChecksum;
 use mountpoint_s3_client::types::{ClientBackpressureHandle, GetBodyPart, GetObjectParams, GetObjectResponse};
 use std::marker::{Send, Sync};
 use std::sync::Arc;
