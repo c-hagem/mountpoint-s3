@@ -77,6 +77,9 @@ class CrtBenchmark(BaseBenchmark):
             f"{self.crt_benchmarks_path}/build",
         ]
 
+        if (branch := self.crt_config["crt_benchmarks_branch"]) is not None:
+            subprocess_args.extend(["--branch", branch])
+
         log.info(f"Running CRT build with args: {subprocess_args}")
         try:
             subprocess.run(subprocess_args, check=True, capture_output=True, text=True)
@@ -100,6 +103,7 @@ class CrtBenchmark(BaseBenchmark):
 
         if network_interfaces := self.common_config['network_interfaces']:
             subprocess_args.extend(["--nic", ",".join(network_interfaces)])
+
 
         log.info(f"Running CRT benchmark: {subprocess_args}")
         result = subprocess.run(subprocess_args, check=True, capture_output=True, text=True)
