@@ -209,6 +209,12 @@ struct CliArgs {
         visible_alias = "memory-limit-gb"
     )]
     crt_memory_limit_gb: u64,
+    #[arg(
+        long,
+        help = "Override value for CRT Event Loop Group number of threads",
+        default_value = "0"
+    )]
+    pub event_loop_threads: u16,
     #[arg(long, help = "Part size in bytes for multi-part GET", default_value = "8388608")]
     part_size: usize,
     #[arg(long, help = "Number of benchmark iterations", default_value = "1")]
@@ -237,6 +243,7 @@ fn create_s3_client_config(region: &str, args: &CliArgs, nics: Vec<String>) -> S
 
     config = config.throughput_target_gbps(args.throughput_target_gbps);
     config = config.memory_limit_in_bytes(args.crt_memory_limit_gb * 1024 * 1024 * 1024);
+    config = config.event_loop_threads(args.event_loop_threads);
     config = config.network_interface_names(nics);
 
     config = config.part_size(args.part_size);

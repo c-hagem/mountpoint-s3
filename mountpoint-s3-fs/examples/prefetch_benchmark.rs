@@ -72,6 +72,9 @@ pub struct CliArgs {
     #[arg(long, help = "Override value for CRT memory limit in gibibytes", value_name = "GiB")]
     pub crt_memory_limit_gib: Option<u64>,
 
+    #[arg(long, help = "Override value for CRT Event Loop Group number of threads")]
+    pub event_loop_threads: Option<u16>,
+
     #[clap(
         long,
         help = "Maximum memory usage target for Mountpoint's memory limiter [default: 95% of total system memory]",
@@ -148,6 +151,9 @@ impl CliArgs {
         }
         if let Some(limit_gib) = self.crt_memory_limit_gib {
             client_config = client_config.memory_limit_in_bytes(limit_gib * 1024 * 1024 * 1024);
+        }
+        if let Some(limit_threads) = self.event_loop_threads {
+            client_config = client_config.event_loop_threads(limit_threads)
         }
         if let Some(part_size) = self.part_size {
             client_config = client_config.part_size(part_size as usize);
