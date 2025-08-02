@@ -55,7 +55,7 @@ class PrefetchBenchmark(BaseBenchmark):
             subprocess_args.extend(["--max-memory-target", str(max_memory_target)])
 
         if (elg_threads := self.common_config.get('elg_threads')) is not None:
-            subprocess_args.extend(["--event-loop-threads", elg_threads])
+            subprocess_args.extend(["--event-loop-threads", str(elg_threads)])
 
         if (read_part_size := self.common_config['read_part_size']) is not None:
             subprocess_args.extend(["--part-size", str(read_part_size)])
