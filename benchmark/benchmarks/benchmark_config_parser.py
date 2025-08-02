@@ -42,6 +42,7 @@ class BenchmarkConfigParser:
             'with_bwm': getattr(self.cfg.monitoring, 'with_bwm', False),
             'write_part_size': getattr(self.cfg, 'write_part_size', 16777216),  # 16 MiB
             'with_perf_stat': getattr(self.cfg.monitoring, 'with_perf_stat', False),
+            'elg_threads': getattr(self.cfg, "elg_threads", None)
         }
 
     def get_mountpoint_config(self) -> Dict[str, Any]:
@@ -56,7 +57,7 @@ class BenchmarkConfigParser:
             'mountpoint_max_background': getattr(mp_cfg, 'mountpoint_max_background', None),
             'prefix': getattr(mp_cfg, 'prefix', None),
             'stub_mode': getattr(mp_cfg, 'stub_mode', 'off'),
-            'upload_checksums': getattr(mp_cfg, 'upload_checksums', None),
+            'upload_checksums': getattr(mp_cfg, 'upload_checksums', None)
         }
 
     def get_fio_config(self) -> Dict[str, Any]:

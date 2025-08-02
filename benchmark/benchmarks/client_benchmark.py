@@ -48,6 +48,10 @@ class ClientBenchmark(BaseBenchmark):
         if (crt_mem_limit_gib := self.common_config.get('crt_mem_limit_gib')) is not None:
             subprocess_args.extend(["--crt-memory-limit-gb", crt_mem_limit_gib])
 
+        if (elg_threads := self.common_config.get('elg_threads')) is not None:
+            subprocess_args.extend(["--event-loop-threads", elg_threads])
+
+
         subprocess_args.extend(["--output-file", "client-output.json"])
         subprocess_args.append("real")
         region = self.common_config['region']
