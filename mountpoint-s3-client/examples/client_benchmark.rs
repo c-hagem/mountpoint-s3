@@ -13,6 +13,7 @@ use mountpoint_s3_client::mock_client::{MockClient, MockObject};
 use mountpoint_s3_client::types::{ClientBackpressureHandle, ETag, GetObjectParams, GetObjectResponse};
 use mountpoint_s3_client::{ObjectClient, S3CrtClient};
 use mountpoint_s3_crt::common::rust_log_adapter::RustLogAdapter;
+use mountpoint_s3_fs::memory::PagedPool;
 use serde_json::{json, to_writer};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::Subscriber;
@@ -245,6 +246,9 @@ fn create_s3_client_config(region: &str, args: &CliArgs, nics: Vec<String>) -> S
     config = config.memory_limit_in_bytes(args.crt_memory_limit_gb * 1024 * 1024 * 1024);
     config = config.event_loop_threads(args.event_loop_threads);
     config = config.network_interface_names(nics);
+    // Configure PagedPool
+    let pool = PagedPool::new_with_candidate_sizes([8 * 1024 * 1024]);
+    config = config.memory_pool(pool.clone());
 
     config = config.part_size(args.part_size);
 
