@@ -46,6 +46,10 @@ impl ChecksummedBytes {
         Ok(self.buffer_slice())
     }
 
+    pub fn into_bytes_unchecked(self) -> Bytes {
+        self.buffer_slice()
+    }
+
     /// Returns the number of bytes contained in this [ChecksummedBytes].
     pub fn len(&self) -> usize {
         self.range.len()
@@ -655,14 +659,14 @@ impl Chunky {
 
         if self.chunks.len() == 1 {
             let segment = self.chunks.into_iter().next().unwrap();
-            let validated_chunk = segment.chunk_data.into_bytes()?;
+            let validated_chunk = segment.chunk_data.into_bytes_unchecked();
             let slice = validated_chunk.slice(segment.chunk_offset..segment.chunk_offset + segment.length);
             return Ok(slice);
         }
 
         let mut result = Vec::with_capacity(self.total_len);
         for segment in self.chunks {
-            let validated_chunk = segment.chunk_data.into_bytes()?;
+            let validated_chunk = segment.chunk_data.into_bytes_unchecked();
             let slice = validated_chunk.slice(segment.chunk_offset..segment.chunk_offset + segment.length);
             result.extend_from_slice(&slice);
         }
