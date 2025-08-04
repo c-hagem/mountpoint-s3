@@ -315,7 +315,7 @@ async fn wait_for_download(
             let bytes = chunky.into_bytes().map_err(|e| format!("Integrity error: {:?}", e))?;
             bytes.len() as u64
         } else {
-            let bytes = request.read(offset, read_size as usize).await?;
+            let bytes = request.read(offset, read_size as usize).await?.into_bytes()?;
             bytes.len() as u64
         };
         offset += bytes_read;
