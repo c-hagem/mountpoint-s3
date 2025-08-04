@@ -1,4 +1,5 @@
 import logging
+import os
 import subprocess
 from typing import Dict, Any
 
@@ -19,7 +20,37 @@ class PrefetchBenchmark(BaseBenchmark):
     def setup(self) -> None:
         pass
 
+    def _parse_size_to_bytes(self, size_str: str) -> int:
+        """Parse size strings like '1MB', '2GB' to bytes."""
+        size_str = size_str.upper().strip()
+        if size_str.endswith('B'):
+            size_str = size_str[:-1]
+
+        multipliers = {
+            'K': 1024,
+            'M': 1024 * 1024,
+            'G': 1024 * 1024 * 1024,
+            'T': 1024 * 1024 * 1024 * 1024,
+        }
+
+        for suffix, multiplier in multipliers.items():
+            if size_str.endswith(suffix):
+                return int(float(size_str[:-1]) * multiplier)
+
+        # If no suffix, assume bytes
+        return int(size_str)
+
     def run_benchmark(self) -> None:
+        # Configure environment variables for chunky reads
+        env = os.environ.copy()
+
+        if self.prefetch_config['chunky_reads']:
+            # Set the experimental CRT chunk size override
+            chunk_size = self.prefetch_config.get('chunk_size', '1MB')
+            chunk_size_bytes = self._parse_size_to_bytes(chunk_size)
+
+            env['EXPERIMENTAL_CRT_CHUNKSIZE_OVERRIDE'] = str(chunk_size_bytes)
+            log.info(f"Chunky reads enabled with chunk size: {chunk_size} ({chunk_size_bytes} bytes)")
         subprocess_args = [
             "cargo",
             "run",
@@ -66,10 +97,14 @@ class PrefetchBenchmark(BaseBenchmark):
         if (run_time := self.common_config['run_time']) is not None:
             subprocess_args.extend(["--max-duration", str(run_time)])
 
+        # Add chunky reads flag if enabled
+        if self.prefetch_config['chunky_reads']:
+            subprocess_args.append("--chunky-reads")
+
         subprocess_args.extend(["--output-file", "prefetch-output.json"])
 
         log.info("Running prefetch benchmark with args: %s", subprocess_args)
-        subprocess.run(subprocess_args, check=True, capture_output=True, text=True)
+        subprocess.run(subprocess_args, check=True, capture_output=True, text=True, env=env)
         log.info("Prefetch benchmark completed successfully.")
 
     def post_process(self) -> None:

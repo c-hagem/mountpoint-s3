@@ -53,6 +53,8 @@ benchmarks:
   
   prefetch:
     max_memory_target: !!null
+    chunky_reads: false
+    chunk_size: "1MB"  # Chunk size for chunky reads (will set EXPERIMENTAL_CRT_CHUNKSIZE_OVERRIDE)
   
   crt:
     crt_benchmarks_path: !!null

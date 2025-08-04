@@ -71,6 +71,8 @@ class BenchmarkConfigParser:
         prefetch_cfg = self.cfg.benchmarks.prefetch
         return {
             'max_memory_target': getattr(prefetch_cfg, 'max_memory_target', None),
+            'chunky_reads': getattr(prefetch_cfg, 'chunky_reads', False),
+            'chunk_size': getattr(prefetch_cfg, 'chunk_size', '1MB'),
         }
 
     def get_crt_config(self) -> Dict[str, Any]:
