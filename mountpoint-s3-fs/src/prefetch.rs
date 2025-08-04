@@ -39,7 +39,7 @@ use mountpoint_s3_client::{ObjectClient, error_metadata::ProvideErrorMetadata};
 use thiserror::Error;
 use tracing::trace;
 
-use crate::checksums::{ChecksummedBytes, IntegrityError};
+use crate::checksums::{ChecksummedBytes, Chunky, IntegrityError};
 use crate::data_cache::DataCache;
 use crate::fs::error_metadata::{ErrorMetadata, MOUNTPOINT_ERROR_CLIENT};
 use crate::object::ObjectId;
@@ -224,6 +224,8 @@ where
     next_sequential_read_offset: u64,
     next_request_offset: u64,
     size: u64,
+    /// Buffer for partially consumed chunk (chunk_data, chunk_start_offset, consumed_bytes)
+    last_chunk_buffer: Option<(ChecksummedBytes, u64, usize)>,
 }
 
 impl<Client> PrefetchGetObject<Client>
@@ -250,6 +252,7 @@ where
             bucket,
             object_id,
             size,
+            last_chunk_buffer: None,
         }
     }
 
@@ -272,6 +275,133 @@ where
             self.reset_prefetch_to_offset(offset);
         }
         result
+    }
+
+    /// Read data and return a Chunky that validates complete chunks (typically 1MB from CRT).
+    /// Each read operation re-validates the complete chunks.
+    pub async fn read_chunky(
+        &mut self,
+        offset: u64,
+        length: usize,
+    ) -> Result<Chunky, PrefetchReadError<Client::ClientError>> {
+        trace!(
+            offset,
+            length,
+            next_seq_offset = self.next_sequential_read_offset,
+            "read_chunky"
+        );
+        let result = self.try_read_chunky(offset, length).await;
+        if result.is_err() {
+            self.reset_prefetch_to_offset(offset);
+        }
+        result
+    }
+
+    async fn try_read_chunky(
+        &mut self,
+        offset: u64,
+        length: usize,
+    ) -> Result<Chunky, PrefetchReadError<Client::ClientError>> {
+        // Set preferred part size to 1MB for optimal CRT chunk performance
+        let chunk_size = 1024 * 1024;
+        self.preferred_part_size = self.preferred_part_size.max(chunk_size);
+
+        let remaining = self.size.saturating_sub(offset);
+        if remaining == 0 {
+            return Ok(Chunky::new());
+        }
+        let mut to_read = (length as u64).min(remaining);
+
+        // Try to seek if this read is not sequential, and if seeking fails, cancel and reset the
+        // prefetcher.
+        if self.next_sequential_read_offset != offset {
+            // Clear last chunk buffer on non-sequential reads
+            self.last_chunk_buffer = None;
+
+            if self.try_seek(offset).await? {
+                trace!("seek succeeded");
+            } else {
+                trace!(
+                    expected = self.next_sequential_read_offset,
+                    actual = offset,
+                    "out-of-order read, resetting prefetch"
+                );
+                counter!("prefetch.out_of_order").increment(1);
+
+                self.record_contiguous_read_metric();
+                self.reset_prefetch_to_offset(offset);
+            }
+        }
+        assert_eq!(self.next_sequential_read_offset, offset);
+
+        let mut chunky = Chunky::new();
+
+        // First, check if we have remaining data in the last chunk buffer
+        if let Some((chunk_data, chunk_start_offset, consumed_bytes)) = self.last_chunk_buffer.take() {
+            let chunk_current_offset = chunk_start_offset + consumed_bytes as u64;
+
+            if chunk_current_offset == self.next_sequential_read_offset {
+                // We can use remaining data from the last chunk
+                let remaining_in_chunk = chunk_data.len() - consumed_bytes;
+                let segment_length = (to_read as usize).min(remaining_in_chunk);
+
+                chunky.add_chunk_segment(chunk_data.clone(), consumed_bytes, segment_length);
+
+                self.next_sequential_read_offset += segment_length as u64;
+                to_read -= segment_length as u64;
+
+                let new_consumed = consumed_bytes + segment_length;
+                if new_consumed < chunk_data.len() {
+                    // Still have data left in this chunk for future reads
+                    self.last_chunk_buffer = Some((chunk_data, chunk_start_offset, new_consumed));
+                }
+            }
+        }
+
+        if self.backpressure_task.is_none() {
+            self.backpressure_task = Some(self.spawn_read_backpressure_request()?);
+        }
+
+        while to_read > 0 {
+            let Some(current_task) = self.backpressure_task.as_mut() else {
+                trace!(offset, length, "read beyond object size");
+                break;
+            };
+            debug_assert!(current_task.remaining() > 0);
+
+            let part = current_task.read(to_read as usize).await?;
+            self.backward_seek_window.push(part.clone());
+
+            // Calculate what portion of this part we actually need for this read
+            let part_start_offset = part.offset();
+            let part_len = part.len();
+
+            // Determine the slice of the part we need
+            let read_offset_in_part = if self.next_sequential_read_offset >= part_start_offset {
+                (self.next_sequential_read_offset - part_start_offset) as usize
+            } else {
+                0
+            };
+
+            let available_in_part = part_len - read_offset_in_part;
+            let segment_length = (to_read as usize).min(available_in_part);
+
+            let chunk_data = part.into_bytes(&self.object_id, part_start_offset)?;
+
+            // Add this as a chunk segment - the complete part will be validated
+            chunky.add_chunk_segment(chunk_data.clone(), read_offset_in_part, segment_length);
+
+            self.next_sequential_read_offset += segment_length as u64;
+            to_read -= segment_length as u64;
+
+            // If we didn't consume the entire chunk, save it for future reads
+            let new_consumed = read_offset_in_part + segment_length;
+            if new_consumed < part_len {
+                self.last_chunk_buffer = Some((chunk_data, part_start_offset, new_consumed));
+            }
+        }
+
+        Ok(chunky)
     }
 
     async fn try_read(
@@ -387,9 +517,10 @@ where
     fn reset_prefetch_to_offset(&mut self, offset: u64) {
         self.backpressure_task = None;
         self.backward_seek_window.clear();
-        self.sequential_read_start_offset = offset;
         self.next_sequential_read_offset = offset;
         self.next_request_offset = offset;
+        self.sequential_read_start_offset = offset;
+        self.last_chunk_buffer = None; // Clear any partially consumed chunk
     }
 
     /// Try to seek within the current inflight requests without restarting them. Returns true if
@@ -407,6 +538,8 @@ where
 
     async fn try_seek_forward(&mut self, offset: u64) -> Result<bool, PrefetchReadError<Client::ClientError>> {
         assert!(offset > self.next_sequential_read_offset);
+        // Clear any partially consumed chunk when seeking
+        self.last_chunk_buffer = None;
         let total_seek_distance = offset - self.next_sequential_read_offset;
         histogram!("prefetch.seek_distance", "dir" => "forward").record(total_seek_distance as f64);
 
@@ -445,6 +578,8 @@ where
 
     async fn try_seek_backward(&mut self, offset: u64) -> Result<bool, PrefetchReadError<Client::ClientError>> {
         assert!(offset < self.next_sequential_read_offset);
+        // Clear any partially consumed chunk when seeking
+        self.last_chunk_buffer = None;
 
         // When the task is None it means either we have just started prefetching or recently reset it,
         // in both cases the backward seek window would be empty so we can bail out early.

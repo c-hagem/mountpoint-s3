@@ -596,3 +596,93 @@ mod tests {
         assert_eq!(combined, crc);
     }
 }
+
+/// A Chunky represents a concatenation of one or more ChecksummedBytes segments,
+/// each representing a chunk (typically 1MB) with validation happening at chunk boundaries.
+#[derive(Clone, Debug)]
+#[must_use]
+pub struct Chunky {
+    /// The constituent chunks
+    chunks: Vec<ChunkSegment>,
+    /// Total length across all chunks
+    total_len: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ChunkSegment {
+    /// The complete chunk data
+    chunk_data: ChecksummedBytes,
+    /// Offset within this chunk where our data starts
+    chunk_offset: usize,
+    /// Length of data we want from this chunk
+    length: usize,
+}
+
+impl Chunky {
+    /// Create a new empty Chunky
+    pub fn new() -> Self {
+        Self {
+            chunks: Vec::new(),
+            total_len: 0,
+        }
+    }
+
+    /// Add a chunk segment to this Chunky
+    pub fn add_chunk_segment(&mut self, chunk_data: ChecksummedBytes, chunk_offset: usize, length: usize) {
+        self.chunks.push(ChunkSegment {
+            chunk_data,
+            chunk_offset,
+            length,
+        });
+        self.total_len += length;
+    }
+
+    /// Validate the Chunky by validating each constituent chunk.
+    pub fn validate(&self) -> Result<(), IntegrityError> {
+        for segment in &self.chunks {
+            segment.chunk_data.validate()?;
+        }
+        Ok(())
+    }
+
+    /// Convert the Chunky into bytes after validation.
+    pub fn into_bytes(self) -> Result<Bytes, IntegrityError> {
+        self.validate()?;
+
+        if self.chunks.is_empty() {
+            return Ok(Bytes::new());
+        }
+
+        if self.chunks.len() == 1 {
+            let segment = self.chunks.into_iter().next().unwrap();
+            let validated_chunk = segment.chunk_data.into_bytes()?;
+            let slice = validated_chunk.slice(segment.chunk_offset..segment.chunk_offset + segment.length);
+            return Ok(slice);
+        }
+
+        let mut result = Vec::with_capacity(self.total_len);
+        for segment in self.chunks {
+            let validated_chunk = segment.chunk_data.into_bytes()?;
+            let slice = validated_chunk.slice(segment.chunk_offset..segment.chunk_offset + segment.length);
+            result.extend_from_slice(&slice);
+        }
+
+        Ok(Bytes::from(result))
+    }
+
+    /// Get the total length of data in this Chunky
+    pub fn len(&self) -> usize {
+        self.total_len
+    }
+
+    /// Check if the Chunky is empty
+    pub fn is_empty(&self) -> bool {
+        self.total_len == 0
+    }
+}
+
+impl Default for Chunky {
+    fn default() -> Self {
+        Self::new()
+    }
+}

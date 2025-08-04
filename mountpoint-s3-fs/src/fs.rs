@@ -450,11 +450,20 @@ where
             FileHandleState::Write(_) => return Err(err!(libc::EBADF, "file handle is not open for reads")),
         };
 
-        request
-            .read(offset as u64, size as usize)
-            .await?
-            .into_bytes()
-            .map_err(|e| err!(libc::EIO, source:e, "integrity error"))
+        // Check environment variable to optionally use chunky reads for 1MB chunk validation
+        if std::env::var("MOUNTPOINT_USE_CHUNKY_READS").is_ok() {
+            request
+                .read_chunky(offset as u64, size as usize)
+                .await?
+                .into_bytes()
+                .map_err(|e| err!(libc::EIO, source:e, "integrity error"))
+        } else {
+            request
+                .read(offset as u64, size as usize)
+                .await?
+                .into_bytes()
+                .map_err(|e| err!(libc::EIO, source:e, "integrity error"))
+        }
     }
 
     pub async fn mknod(

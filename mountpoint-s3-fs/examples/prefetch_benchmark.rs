@@ -12,6 +12,7 @@ use mountpoint_s3_client::config::{EndpointConfig, RustLogAdapter, S3ClientConfi
 use mountpoint_s3_client::types::HeadObjectParams;
 use mountpoint_s3_client::{ObjectClient, S3CrtClient};
 use mountpoint_s3_fs::Runtime;
+
 use mountpoint_s3_fs::mem_limiter::MemoryLimiter;
 use mountpoint_s3_fs::memory::PagedPool;
 use mountpoint_s3_fs::object::ObjectId;
@@ -110,6 +111,12 @@ pub struct CliArgs {
 
     #[arg(
         long,
+        help = "Use chunky reads for 1MB chunk validation (validates complete chunks on each read)"
+    )]
+    chunky_reads: bool,
+
+    #[arg(
+        long,
         help = "One or more network interfaces to use when accessing S3. Requires Linux 5.7+ or running as root.",
         value_name = "NETWORK_INTERFACE",
         value_delimiter = ','
@@ -165,6 +172,25 @@ fn main() -> anyhow::Result<()> {
 
     let args = CliArgs::parse();
 
+    // Print benchmark configuration
+    let part_size = args.part_size.unwrap_or(8 * 1024 * 1024);
+    println!("Benchmark configuration:");
+    println!(
+        "  Read mode: {}",
+        if args.chunky_reads {
+            "Chunky reads (1MB chunk validation)"
+        } else {
+            "Standard reads"
+        }
+    );
+    println!("  Read size: {} bytes ({} KB)", args.read_size, args.read_size / 1024);
+    println!("  Part size: {} bytes ({} MB)", part_size, part_size / (1024 * 1024));
+    println!("  Iterations: {}", args.iterations);
+    if let Some(duration) = args.max_duration {
+        println!("  Max duration: {:?}", duration);
+    }
+    println!();
+
     let bucket = args.bucket.as_str();
     let pool = PagedPool::new_with_candidate_sizes([args.part_size.unwrap_or(8 * 1024 * 1024) as usize]);
     let client_config = args.s3_client_config().memory_pool(pool.clone());
@@ -208,7 +234,13 @@ fn main() -> anyhow::Result<()> {
                 let read_size = args.read_size;
 
                 let task = scope.spawn(move || {
-                    let result = block_on(wait_for_download(request, *size, read_size as u64, timeout));
+                    let result = block_on(wait_for_download(
+                        request,
+                        *size,
+                        read_size as u64,
+                        timeout,
+                        args.chunky_reads,
+                    ));
                     if let Ok(bytes_read) = result {
                         received_bytes.fetch_add(bytes_read, Ordering::SeqCst);
                     } else {
@@ -269,16 +301,23 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn wait_for_download(
-    mut request: PrefetchGetObject<S3CrtClient>,
+    mut request: PrefetchGetObject<impl ObjectClient + Clone + Send + Sync + 'static>,
     size: u64,
     read_size: u64,
     timeout: Instant,
+    use_chunky: bool,
 ) -> Result<u64, Box<dyn Error>> {
     let mut offset = 0;
     let mut total_bytes_read = 0;
     while offset < size && Instant::now() < timeout {
-        let bytes = request.read(offset, read_size as usize).await?;
-        let bytes_read = bytes.len() as u64;
+        let bytes_read = if use_chunky {
+            let chunky = request.read_chunky(offset, read_size as usize).await?;
+            let bytes = chunky.into_bytes().map_err(|e| format!("Integrity error: {:?}", e))?;
+            bytes.len() as u64
+        } else {
+            let bytes = request.read(offset, read_size as usize).await?;
+            bytes.len() as u64
+        };
         offset += bytes_read;
         total_bytes_read += bytes_read;
     }
