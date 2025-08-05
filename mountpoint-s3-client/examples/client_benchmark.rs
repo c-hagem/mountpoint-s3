@@ -221,6 +221,8 @@ struct CliArgs {
         default_value = "0"
     )]
     initial_window_size: Option<usize>,
+    #[arg(long, help = "Skip checksum computation for downloaded data to improve performance")]
+    ignore_download_checksums: bool,
     #[arg(long, help = "Output file to write the results to", value_name = "OUTPUT_FILE")]
     output_file: Option<PathBuf>,
     #[arg(

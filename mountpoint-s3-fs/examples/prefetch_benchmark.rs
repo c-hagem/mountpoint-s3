@@ -116,6 +116,9 @@ pub struct CliArgs {
     )]
     bind: Option<Vec<String>>,
 
+    #[arg(long, help = "Skip checksum computation for downloaded data")]
+    ignore_download_checksums: bool,
+
     #[clap(long, help = "Output file to write the results to", value_name = "OUTPUT_FILE")]
     output_file: Option<PathBuf>,
 }
@@ -192,11 +195,12 @@ fn main() -> anyhow::Result<()> {
     while iteration < args.iterations && Instant::now() < timeout {
         let received_bytes = Arc::new(AtomicU64::new(0));
         let start = Instant::now();
-        let manager = Prefetcher::default_builder(client.clone()).build(
-            runtime.clone(),
-            mem_limiter.clone(),
-            PrefetcherConfig::default(),
-        );
+        let prefetcher_config = PrefetcherConfig {
+            ignore_download_checksums: args.ignore_download_checksums,
+            ..PrefetcherConfig::default()
+        };
+        let manager =
+            Prefetcher::default_builder(client.clone()).build(runtime.clone(), mem_limiter.clone(), prefetcher_config);
 
         thread::scope(|scope| {
             let mut download_tasks = Vec::new();

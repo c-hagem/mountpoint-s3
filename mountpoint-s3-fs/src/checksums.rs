@@ -5,6 +5,12 @@ use mountpoint_s3_client::checksums::crc32c::{self, Crc32c};
 
 use thiserror::Error;
 
+#[derive(Clone, Debug, Copy, PartialEq)]
+enum ChecksumType {
+    CRC32C,
+    DisableChecksum,
+}
+
 /// A `ChecksummedBytes` is a bytes buffer that carries its checksum.
 /// The implementation guarantees that integrity will be validated before the data can be accessed.
 /// Data transformations will either fail returning an [IntegrityError], or propagate the checksum
@@ -17,7 +23,9 @@ pub struct ChecksummedBytes {
     /// Range over [Self::buffer]
     range: Range<usize>,
     /// Checksum for [Self::buffer]
-    checksum: Crc32c,
+    checksum: Option<Crc32c>,
+
+    checksum_algorithm: ChecksumType,
 }
 
 impl ChecksummedBytes {
@@ -28,7 +36,8 @@ impl ChecksummedBytes {
         Self {
             buffer: bytes,
             range: full_range,
-            checksum,
+            checksum: Some(checksum),
+            checksum_algorithm: ChecksumType::CRC32C,
         }
     }
 
@@ -38,12 +47,29 @@ impl ChecksummedBytes {
         Self::new_from_inner_data(bytes, checksum)
     }
 
+    /// Create [ChecksummedBytes] from [Bytes] without checksum validation.
+    /// This is more efficient when checksum validation is not needed.
+    pub fn new_unchecksummed(bytes: Bytes) -> Self {
+        let full_range = 0..bytes.len();
+        Self {
+            buffer: bytes,
+            range: full_range,
+            checksum: None, // No checksum when disabled
+            checksum_algorithm: ChecksumType::DisableChecksum,
+        }
+    }
+
     /// Convert the [ChecksummedBytes] into [Bytes], data integrity will be validated before converting.
     ///
     /// Return [IntegrityError] on data corruption.
     pub fn into_bytes(self) -> Result<Bytes, IntegrityError> {
         self.validate()?;
         Ok(self.buffer_slice())
+    }
+
+    /// Convert the [ChecksummedBytes] into [Bytes] without checksum validation.
+    pub fn into_bytes_unchecked(self) -> Bytes {
+        self.buffer_slice()
     }
 
     /// Returns the number of bytes contained in this [ChecksummedBytes].
@@ -74,6 +100,7 @@ impl ChecksummedBytes {
             buffer: self.buffer.clone(),
             range: suffix_range,
             checksum: self.checksum,
+            checksum_algorithm: self.checksum_algorithm,
         }
     }
 
@@ -114,6 +141,7 @@ impl ChecksummedBytes {
             buffer: self.buffer.clone(),
             range: sliced_range,
             checksum: self.checksum,
+            checksum_algorithm: self.checksum_algorithm,
         }
     }
 
@@ -136,7 +164,11 @@ impl ChecksummedBytes {
         *self = Self {
             buffer: bytes,
             range: 0..self.len(),
-            checksum,
+            checksum: match self.checksum_algorithm {
+                ChecksumType::CRC32C => Some(checksum),
+                ChecksumType::DisableChecksum => None,
+            },
+            checksum_algorithm: self.checksum_algorithm,
         };
         Ok(())
     }
@@ -159,25 +191,40 @@ impl ChecksummedBytes {
             return Ok(());
         }
 
-        // When appending two slices, we can combine their checksums and obtain the new checksum
-        // without having to recompute it from the data.
-        // However, since a `ChecksummedBytes` potentially holds the checksum of some larger buffer,
-        // rather than the exact one for the slice, we need to first invoke `shrink_to_fit` on each
-        // slice and use the resulting exact checksums.
-        self.shrink_to_fit()?;
-        assert_eq!(self.buffer.len(), self.len());
-        extend.shrink_to_fit()?;
-        assert_eq!(extend.buffer.len(), extend.len());
+        // Handle different checksum algorithm combinations
+        let new_checksum_algorithm = match (&self.checksum_algorithm, &extend.checksum_algorithm) {
+            (ChecksumType::DisableChecksum, _) | (_, ChecksumType::DisableChecksum) => ChecksumType::DisableChecksum,
+            (ChecksumType::CRC32C, ChecksumType::CRC32C) => ChecksumType::CRC32C,
+        };
 
-        // Combine the checksums.
-        let new_checksum = combine_checksums(self.checksum, extend.checksum, extend.len());
+        // Combine the slices efficiently
+        let new_bytes = if matches!(new_checksum_algorithm, ChecksumType::DisableChecksum) {
+            // Fast path: just concatenate without checksum validation
+            let mut bytes_mut = BytesMut::with_capacity(self.len() + extend.len());
+            bytes_mut.extend_from_slice(&self.buffer_slice());
+            bytes_mut.extend_from_slice(&extend.buffer_slice());
+            bytes_mut.freeze()
+        } else {
+            // Checksum path: validate first, then combine
+            self.shrink_to_fit()?;
+            assert_eq!(self.buffer.len(), self.len());
+            extend.shrink_to_fit()?;
+            assert_eq!(extend.buffer.len(), extend.len());
 
-        // Combine the slices.
-        let new_bytes = {
             let mut bytes_mut = BytesMut::with_capacity(self.len() + extend.len());
             bytes_mut.extend_from_slice(&self.buffer);
             bytes_mut.extend_from_slice(&extend.buffer);
             bytes_mut.freeze()
+        };
+
+        let new_checksum = if matches!(new_checksum_algorithm, ChecksumType::CRC32C) {
+            Some(combine_checksums(
+                self.checksum.unwrap(),
+                extend.checksum.unwrap(),
+                extend.len(),
+            ))
+        } else {
+            None // No checksum for disabled checksums
         };
 
         let new_range = 0..(new_bytes.len());
@@ -185,6 +232,7 @@ impl ChecksummedBytes {
             buffer: new_bytes,
             range: new_range,
             checksum: new_checksum,
+            checksum_algorithm: new_checksum_algorithm,
         };
         Ok(())
     }
@@ -193,9 +241,18 @@ impl ChecksummedBytes {
     ///
     /// Return [IntegrityError] on data corruption.
     pub fn validate(&self) -> Result<(), IntegrityError> {
-        let checksum = crc32c::checksum(&self.buffer);
-        if self.checksum != checksum {
-            return Err(IntegrityError::ChecksumMismatch(self.checksum, checksum));
+        match self.checksum_algorithm {
+            ChecksumType::CRC32C => {
+                let checksum = crc32c::checksum(&self.buffer);
+                if let Some(stored_checksum) = self.checksum {
+                    if checksum != stored_checksum {
+                        return Err(IntegrityError::ChecksumMismatch(checksum, stored_checksum));
+                    }
+                }
+            }
+            ChecksumType::DisableChecksum => {
+                // No validation needed
+            }
         }
         Ok(())
     }
@@ -207,7 +264,7 @@ impl ChecksummedBytes {
     /// If you are only interested in the underlying bytes, **you should use `into_bytes()`**.
     pub fn into_inner(mut self) -> Result<(Bytes, Crc32c), IntegrityError> {
         self.shrink_to_fit()?;
-        Ok((self.buffer, self.checksum))
+        Ok((self.buffer, self.checksum.unwrap_or(Crc32c::new(0))))
     }
 
     /// Return the slice of `buffer` corresponding to `range`.
@@ -223,7 +280,8 @@ impl Default for ChecksummedBytes {
         Self {
             buffer: Default::default(),
             range: Default::default(),
-            checksum: Crc32c::new(0),
+            checksum: Some(Crc32c::new(0)),
+            checksum_algorithm: ChecksumType::CRC32C,
         }
     }
 }
@@ -313,8 +371,8 @@ mod tests {
         assert_eq!(expected, new_checksummed_bytes.buffer);
         assert_eq!(expected_part1, checksummed_bytes.buffer_slice());
         assert_eq!(expected_part2, new_checksummed_bytes.buffer_slice());
-        assert_eq!(expected_checksum, checksummed_bytes.checksum);
-        assert_eq!(expected_checksum, new_checksummed_bytes.checksum);
+        assert_eq!(expected_checksum, checksummed_bytes.checksum.unwrap());
+        assert_eq!(expected_checksum, new_checksummed_bytes.checksum.unwrap());
     }
 
     #[test]
@@ -331,8 +389,8 @@ mod tests {
         assert_eq!(expected, original.buffer_slice());
         assert_eq!(expected, slice.buffer);
         assert_eq!(expected_slice, slice.buffer_slice());
-        assert_eq!(expected_checksum, original.checksum);
-        assert_eq!(expected_checksum, slice.checksum);
+        assert_eq!(expected_checksum, original.checksum.unwrap());
+        assert_eq!(expected_checksum, slice.checksum.unwrap());
     }
 
     fn create_checksummed_bytes_with_range(range: Range<usize>) -> ChecksummedBytes {
@@ -341,7 +399,8 @@ mod tests {
         ChecksummedBytes {
             buffer,
             range,
-            checksum,
+            checksum: Some(checksum),
+            checksum_algorithm: ChecksumType::CRC32C,
         }
     }
 
@@ -433,13 +492,13 @@ mod tests {
         let (unchanged_bytes, unchanged_checksum) = original.clone().into_inner().unwrap();
         assert_eq!(original.buffer_slice(), unchanged_bytes);
         assert_eq!(original.buffer, unchanged_bytes);
-        assert_eq!(original.checksum, unchanged_checksum);
+        assert_eq!(original.checksum.unwrap(), unchanged_checksum);
 
         let slice = original.clone().split_off(5);
         let (shrunken_bytes, shrunken_checksum) = slice.clone().into_inner().unwrap();
         assert_eq!(slice.buffer_slice(), shrunken_bytes);
         assert_ne!(slice.buffer, shrunken_bytes);
-        assert_ne!(slice.checksum, shrunken_checksum);
+        assert_ne!(slice.checksum.unwrap(), shrunken_checksum);
     }
 
     #[test]

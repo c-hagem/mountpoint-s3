@@ -41,6 +41,7 @@ pub struct RequestTaskConfig {
     pub initial_read_window_size: usize,
     pub max_read_window_size: usize,
     pub read_window_size_multiplier: usize,
+    pub ignore_download_checksums: bool,
 }
 
 /// The range of an [ObjectPartStream].
@@ -250,6 +251,7 @@ impl<Client: ObjectClient + Clone + Send + Sync + 'static> ObjectPartStream<Clie
                         part_queue_producer,
                         object_id: config.object_id,
                         preferred_part_size: config.preferred_part_size,
+                        ignore_download_checksums: config.ignore_download_checksums,
                     };
                     part_composer.try_compose_parts(request_stream).await;
                 }
@@ -269,6 +271,7 @@ struct ClientPartComposer<E: std::error::Error> {
     part_queue_producer: PartQueueProducer<E>,
     object_id: ObjectId,
     preferred_part_size: usize,
+    ignore_download_checksums: bool,
 }
 
 impl<E> ClientPartComposer<E>
@@ -299,8 +302,12 @@ where
                 let chunk_size = distance_to_align.min(body.len());
                 let chunk = body.split_to(chunk_size);
                 // S3 doesn't provide checksum for us if the request range is not aligned to
-                // object part boundaries, so we're computing our own checksum here.
-                let checksum_bytes = ChecksummedBytes::new(chunk);
+                // object part boundaries, so we're computing our own checksum here if needed.
+                let checksum_bytes = if self.ignore_download_checksums {
+                    ChecksummedBytes::new_unchecksummed(chunk)
+                } else {
+                    ChecksummedBytes::new(chunk)
+                };
                 let part = Part::new(self.object_id.clone(), curr_offset, checksum_bytes);
                 curr_offset += part.len() as u64;
                 self.part_queue_producer.push(Ok(part));

@@ -476,6 +476,7 @@ mod tests {
                 initial_read_window_size,
                 max_read_window_size,
                 read_window_size_multiplier,
+                ignore_download_checksums: false,
             };
             let request_task = stream.spawn_get_object_request(config);
             compare_read(&id, &object, request_task);
@@ -502,6 +503,7 @@ mod tests {
                 initial_read_window_size,
                 max_read_window_size,
                 read_window_size_multiplier,
+                ignore_download_checksums: false,
             };
             let request_task = stream.spawn_get_object_request(config);
             compare_read(&id, &object, request_task);
@@ -555,6 +557,7 @@ mod tests {
                     initial_read_window_size,
                     max_read_window_size,
                     read_window_size_multiplier,
+                    ignore_download_checksums: false,
                 };
                 let request_task = stream.spawn_get_object_request(config);
                 compare_read(&id, &object, request_task);

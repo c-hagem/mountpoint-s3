@@ -111,6 +111,8 @@ pub struct PrefetcherConfig {
     /// The maximum distance the prefetcher will seek backwards before resetting and starting a new
     /// S3 request. We keep this much data in memory in addition to any inflight requests.
     pub max_backward_seek_distance: u64,
+    /// Whether to skip checksum computation for downloaded data to improve performance
+    pub ignore_download_checksums: bool,
 }
 
 impl Default for PrefetcherConfig {
@@ -125,6 +127,7 @@ impl Default for PrefetcherConfig {
             // just start a new request instead.
             max_forward_seek_wait_distance: 16 * 1024 * 1024,
             max_backward_seek_distance: 1 * 1024 * 1024,
+            ignore_download_checksums: false,
         }
     }
 }
@@ -379,6 +382,7 @@ where
             initial_read_window_size,
             max_read_window_size: self.config.max_read_window_size,
             read_window_size_multiplier: self.config.sequential_prefetch_multiplier,
+            ignore_download_checksums: self.config.ignore_download_checksums,
         };
         Ok(self.part_stream.spawn_get_object_request(config))
     }
@@ -574,6 +578,7 @@ mod tests {
             sequential_prefetch_multiplier: test_config.sequential_prefetch_multiplier,
             max_forward_seek_wait_distance: test_config.max_forward_seek_wait_distance,
             max_backward_seek_distance: test_config.max_backward_seek_distance,
+            ignore_download_checksums: false,
         };
 
         let prefetcher = build_prefetcher(client.clone(), prefetcher_type, prefetcher_config);
@@ -868,6 +873,7 @@ mod tests {
             sequential_prefetch_multiplier: test_config.sequential_prefetch_multiplier,
             max_forward_seek_wait_distance: test_config.max_forward_seek_wait_distance,
             max_backward_seek_distance: test_config.max_backward_seek_distance,
+            ignore_download_checksums: false,
         };
 
         let prefetcher = build_prefetcher(client, prefetcher_type, prefetcher_config);
@@ -1243,6 +1249,7 @@ mod tests {
                 sequential_prefetch_multiplier,
                 max_forward_seek_wait_distance,
                 max_backward_seek_distance,
+                ignore_download_checksums: false,
             };
 
             let prefetcher =
@@ -1304,6 +1311,7 @@ mod tests {
                 sequential_prefetch_multiplier,
                 max_forward_seek_wait_distance,
                 max_backward_seek_distance,
+                ignore_download_checksums: false,
             };
 
             let prefetcher =
