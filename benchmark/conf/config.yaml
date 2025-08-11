@@ -7,7 +7,7 @@ defaults:
 # ===== Common parameters for all benchmarks =====
 s3_bucket: ???
 s3_result_bucket: !!null
-application_workers: 1
+application_workers: 1 # Number of concurrent workers AND number of files (j0_100GiB.bin, j1_100GiB.bin, ...)
 iteration: 0
 iterations: 1
 run_time: 30 # Default run time in seconds
@@ -18,8 +18,41 @@ write_part_size: 16777216 # 16 MiB, to allow for uploads of large files
 object_size_in_gib: 100 # Size of the object to benchmark
 benchmark_type: "fio" # fio, prefetch, client, client-bp, crt
 s3_keys: !!null
+download_checksums: true
 mount_type: "stub"
-# Network configuration
+
+# ===== Global stub/latency simulation configuration =====
+# These settings apply to both libfuse stub and mountpoint stub modes
+# Simulates realistic S3 request latencies for more accurate benchmarking
+stub_latency:
+    enabled: false # Enable latency simulation for all stub modes
+    distribution: "normal" # Distribution type: currently only "normal" supported
+    # Default values simulate realistic S3 latencies:
+    # - p50 (median): ~161ms
+    # - p10: ~127ms
+    # - p90: ~200ms
+    mean: 161000 # Mean latency in microseconds (161ms)
+    stddev: 28500 # Standard deviation in microseconds
+    # Alternative latency profiles (uncomment to use):
+    # Fast network: mean=50000, stddev=10000  # ~50ms ±20ms
+    # Slow network: mean=300000, stddev=50000 # ~300ms ±100ms
+
+# Global stub file configuration
+# These settings control the files presented by all stub modes
+#
+# IMPORTANT: Number of files is ALWAYS equal to application_workers
+# - This matches FIO's expectation of one file per worker
+# - Files are named: j0_100GiB.bin, j1_100GiB.bin, ..., j{application_workers-1}_100GiB.bin
+# - Both libfuse stub and mountpoint stub modes follow this pattern
+stub_files:
+    file_size_gib: !!null
+        # File size in GiB (defaults to object_size_in_gib)
+        # Files are named: j0_100GiB.bin, j1_100GiB.bin, j2_100GiB.bin, etc.
+        # This matches FIO's filename_format=j$jobnum_${SIZE_GIB}GiB.bin
+
+        # Network configuration
+
+
 network:
     interface_names: []
     maximum_throughput_gbps:
@@ -43,19 +76,18 @@ mountpoint:
     mountpoint_debug: false
     mountpoint_debug_crt: false
 
-# ===== Stub filesystem configuration =====
+# ===== Libfuse stub filesystem configuration =====
+# These settings are specific to the libfuse stub binary (when mount_type: "stub")
+# For file count and latency settings, see global stub_files and stub_latency sections above
 stub:
-    stub_binary: "./stub" # Path to the libfuse stub executable
-    num_files:
-        !!null # Number of files to present (defaults to application_workers)
-
-
-    background_threads: 64 # Number of background threads for FUSE
-    read_size: 4096 # Read buffer size in bytes
-    latency:
-        enabled: false # Enable latency simulation
-        mean: 1000 # Mean latency in microseconds
-        stddev: 100 # Standard deviation in microseconds
+    stub_binary: "./libfuse-stub/stub" # Path to the libfuse stub executable
+    background_threads: 64 # Number of FUSE background threads
+    read_size: 4096 # Read buffer size in bytes (C_STUB_READSIZE env var)
+    # The stub binary supports additional environment variables:
+    # - C_STUB_NUMFILES: Always set to application_workers value (one file per worker)
+    # - C_STUB_BACKGROUND_THREADS: Set from background_threads above
+    # - C_STUB_READSIZE: Set from read_size above
+    # - STUB_DISTR, STUB_DISTR_MEAN, STUB_DISTR_STDDEV: Set from global stub_latency
 
 # ===== Benchmark-specific configurations =====
 benchmarks:
@@ -89,6 +121,8 @@ hydra:
         # Global sweeper params - use this for common parameters across all benchmarks
         # For specific parameter use sweep params under the specific benchmark type config
         params:
+            # application_workers controls BOTH the number of concurrent workers AND number of files
+            # e.g., 4 workers = files j0_100GiB.bin, j1_100GiB.bin, j2_100GiB.bin, j3_100GiB.bin
             "application_workers": 1, 4, 16, 64, 128
             "iteration": "range(${iterations})"
             "mountpoint.fuse_threads": 1, 16, 64

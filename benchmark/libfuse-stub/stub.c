@@ -9,7 +9,7 @@
 /** @file
  *
  * Configurable stubbed filesystem using low-level API
- * 
+ *
  * Environment variables:
  * - C_STUB_NUMFILES: Number of files (default: 10)
  * - C_STUB_BACKGROUND_THREADS: Background threads (default: 64)
@@ -66,9 +66,9 @@ static unsigned int g_rand_seed;
 static void init_config(void)
 {
     char *env_val;
-    
+
     if (g_initialized) return;  /* Already initialized */
-    
+
     /* Number of files */
     env_val = getenv("C_STUB_NUMFILES");
     if (env_val) {
@@ -77,7 +77,7 @@ static void init_config(void)
             g_num_files = val;
         }
     }
-    
+
     /* Background threads */
     env_val = getenv("C_STUB_BACKGROUND_THREADS");
     if (env_val) {
@@ -86,7 +86,7 @@ static void init_config(void)
             g_background_threads = val;
         }
     }
-    
+
     /* Read buffer size */
     env_val = getenv("C_STUB_READSIZE");
     if (env_val) {
@@ -95,12 +95,12 @@ static void init_config(void)
             g_readsize = (size_t)val;
         }
     }
-    
+
     /* Latency distribution */
     env_val = getenv("STUB_DISTR");
     if (env_val && strcmp(env_val, "normal") == 0) {
         g_use_latency = 1;
-        
+
         env_val = getenv("STUB_DISTR_MEAN");
         if (env_val) {
             double val = atof(env_val);
@@ -108,7 +108,7 @@ static void init_config(void)
                 g_latency_mean = val;
             }
         }
-        
+
         env_val = getenv("STUB_DISTR_STDDEV");
         if (env_val) {
             double val = atof(env_val);
@@ -117,9 +117,9 @@ static void init_config(void)
             }
         }
     }
-    
+
     g_initialized = 1;
-    
+
     printf("Configuration:\n");
     printf("  Files: %d (each %d GB)\n", g_num_files, FILE_SIZE_GB);
     printf("  Background threads: %d\n", g_background_threads);
@@ -137,19 +137,19 @@ static double normal_random(double mean, double stddev)
 {
     static int has_spare = 0;
     static double spare;
-    
+
     if (has_spare) {
         has_spare = 0;
         return spare * stddev + mean;
     }
-    
+
     has_spare = 1;
     double u = ((double)rand_r(&g_rand_seed)) / RAND_MAX;
     double v = ((double)rand_r(&g_rand_seed)) / RAND_MAX;
-    
+
     /* Avoid log(0) */
     if (u == 0.0) u = 1e-10;
-    
+
     double mag = stddev * sqrt(-2.0 * log(u));
     spare = mag * cos(2.0 * M_PI * v);
     return mag * sin(2.0 * M_PI * v) + mean;
@@ -159,7 +159,7 @@ static double normal_random(double mean, double stddev)
 static void simulate_latency(void)
 {
     if (!g_use_latency) return;
-    
+
     double latency_us = normal_random(g_latency_mean, g_latency_stddev);
     if (latency_us > 0) {
         usleep((useconds_t)latency_us);
@@ -172,25 +172,25 @@ static int is_stub_file_ino(fuse_ino_t ino)
     return ino >= 2 && ino <= (1 + g_num_files);
 }
 
-/* Convert inode to file index (1-based) */
+/* Convert inode to file index (0-based) */
 static int ino_to_file_index(fuse_ino_t ino)
 {
-    return (int)(ino - 1);
+    return (int)(ino - 2);
 }
 
-/* Convert file index (1-based) to inode */
+/* Convert file index (0-based) to inode */
 static fuse_ino_t file_index_to_ino(int index)
 {
-    return (fuse_ino_t)(index + 1);
+    return (fuse_ino_t)(index + 2);
 }
 
 static int stub_stat(fuse_ino_t ino, struct stat *stbuf)
 {
     if (!stbuf) return -1;
-    
+
     memset(stbuf, 0, sizeof(*stbuf));
     stbuf->st_ino = ino;
-    
+
     switch (ino) {
     case 1:
         stbuf->st_mode = S_IFDIR | 0755;
@@ -215,10 +215,10 @@ static void stub_ll_init(void *userdata, struct fuse_conn_info *conn)
     (void)userdata;
 
     printf("FUSE init called\n");
-    
+
     /* Initialize configuration first */
     init_config();
-    
+
     /* Initialize random seed for latency simulation */
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -228,7 +228,7 @@ static void stub_ll_init(void *userdata, struct fuse_conn_info *conn)
     if (g_data_buffer) {
         free(g_data_buffer);  /* Clean up any previous allocation */
     }
-    
+
     g_data_buffer = malloc(g_readsize);
     if (g_data_buffer == NULL) {
         fprintf(stderr, "Failed to allocate data buffer of size %zu\n", g_readsize);
@@ -243,16 +243,16 @@ static void stub_ll_init(void *userdata, struct fuse_conn_info *conn)
         /* Set max background threads from configuration */
         conn->max_background = g_background_threads;
     }
-    
+
     printf("FUSE filesystem initialized successfully\n");
 }
 
 static void stub_ll_destroy(void *userdata)
 {
     (void)userdata;
-    
+
     printf("FUSE destroy called\n");
-    
+
     if (g_data_buffer) {
         free(g_data_buffer);
         g_data_buffer = NULL;
@@ -297,7 +297,7 @@ static void stub_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
     /* Check if the name matches j{num}_100GiB.bin pattern */
     int file_index;
     if (sscanf(name, "j%d_100GiB.bin", &file_index) == 1 &&
-        file_index >= 1 && file_index <= g_num_files) {
+        file_index >= 0 && file_index < g_num_files) {
         memset(&e, 0, sizeof(e));
         e.ino = file_index_to_ino(file_index);
         e.attr_timeout = 1.0;
@@ -322,9 +322,9 @@ static void dirbuf_add(fuse_req_t req, struct dirbuf *b, const char *name,
 {
     struct stat stbuf;
     size_t oldsize = b->size;
-    
+
     if (!req || !b || !name) return;
-    
+
     b->size += fuse_add_direntry(req, NULL, 0, name, NULL, 0);
     char *new_p = (char *) realloc(b->p, b->size);
     if (!new_p) {
@@ -333,7 +333,7 @@ static void dirbuf_add(fuse_req_t req, struct dirbuf *b, const char *name,
         return;
     }
     b->p = new_p;
-    
+
     memset(&stbuf, 0, sizeof(stbuf));
     stbuf.st_ino = ino;
     fuse_add_direntry(req, b->p + oldsize, b->size - oldsize, name, &stbuf,
@@ -346,7 +346,7 @@ static int reply_buf_limited(fuse_req_t req, const char *buf, size_t bufsize,
                              off_t off, size_t maxsize)
 {
     if (!req) return -1;
-    
+
     if (off < bufsize)
         return fuse_reply_buf(req, buf + off,
                               min(bufsize - off, maxsize));
@@ -375,7 +375,7 @@ static void stub_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
         dirbuf_add(req, &b, "..", 1);
 
         /* Add all j{num}_100GiB.bin files based on configuration */
-        for (i = 1; i <= g_num_files; i++) {
+        for (i = 0; i < g_num_files; i++) {
             snprintf(filename, sizeof(filename), "j%d_100GiB.bin", i);
             dirbuf_add(req, &b, filename, file_index_to_ino(i));
         }
@@ -469,7 +469,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Failed to parse command line\n");
         return 1;
     }
-    
+
     if (opts.show_help) {
         printf("usage: %s [options] <mountpoint>\n\n", argv[0]);
         printf("Environment variables:\n");
@@ -545,7 +545,7 @@ cleanup:
         free(opts.mountpoint);
     }
     fuse_opt_free_args(&args);
-    
+
     /* Cleanup global resources */
     if (g_data_buffer) {
         free(g_data_buffer);

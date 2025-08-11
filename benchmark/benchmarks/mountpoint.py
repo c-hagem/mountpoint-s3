@@ -30,6 +30,8 @@ def mount_mp(cfg: DictConfig, mount_dir: str) -> Dict[str, Any]:
     config_parser = BenchmarkConfigParser(cfg)
     common_config = config_parser.get_common_config()
     mp_config = config_parser.get_mountpoint_config()
+    stub_latency_config = config_parser.get_global_stub_latency_config()
+
 
     bucket = common_config['s3_bucket']
     stub_mode = mp_config['stub_mode']
@@ -114,6 +116,23 @@ def mount_mp(cfg: DictConfig, mount_dir: str) -> Dict[str, Any]:
 
     if stub_mode != "off" and mp_config["mountpoint_binary"] is not None:
         raise ValueError("Cannot use `stub_mode` with `mountpoint_binary`, `stub_mode` requires recompilation")
+
+    # Set up latency simulation environment variables for all stub modes
+    if stub_mode != "off" and stub_latency_config['enabled']:
+        mp_env["STUB_DISTR"] = stub_latency_config['distribution']
+        mp_env["STUB_DISTR_MEAN"] = str(stub_latency_config['mean'])
+        mp_env["STUB_DISTR_STDDEV"] = str(stub_latency_config['stddev'])
+        log.info(f"Enabling latency simulation for stub mode {stub_mode}: "
+                f"distribution={stub_latency_config['distribution']}, "
+                f"mean={stub_latency_config['mean']}μs, "
+                f"stddev={stub_latency_config['stddev']}μs")
+
+    # Set up global stub file configuration environment variables for all stub modes
+    if stub_mode != "off":
+        mp_env["C_STUB_NUMFILES"] = str(common_config['application_workers'])
+        log.info(f"Setting stub file configuration for mode {stub_mode}: "
+                f"num_files={common_config['application_workers']}, "
+                f"file_size={common_config['object_size_in_gib']}GiB")
 
     match stub_mode:
         case "off":

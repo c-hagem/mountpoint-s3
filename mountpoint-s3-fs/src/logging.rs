@@ -8,6 +8,8 @@ use std::thread;
 
 use anyhow::Context;
 use rand::Rng;
+use rand::distr::Alphanumeric;
+use rand::distr::SampleString;
 use signal_hook::consts::SIGUSR2;
 use signal_hook::iterator::{Handle as SignalsHandle, Signals};
 use time::OffsetDateTime;
@@ -78,11 +80,7 @@ pub fn record_name(name: &str) {
 pub fn prepare_log_file_name(log_directory: &Path) -> PathBuf {
     let timestamp = log_file_name_time_suffix();
 
-    let random_suffix: String = rand::thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
-        .take(6)
-        .map(char::from)
-        .collect();
+    let random_suffix: String = Alphanumeric.sample_string(&mut rand::rng(), 8);
     let file_name = format!("mountpoint-s3-{timestamp}.{random_suffix}.log");
 
     log_directory.join(file_name)

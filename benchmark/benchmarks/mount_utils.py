@@ -124,7 +124,7 @@ def get_mount_info(mount_metadata: Dict[str, Any]) -> Dict[str, Any]:
 
     elif mount_type == 'stub':
         base_info.update({
-            'num_files': mount_metadata.get('num_files'),
+            'num_files': mount_metadata.get('num_files'),  # Always equals application_workers
             'background_threads': mount_metadata.get('background_threads'),
             'read_size': mount_metadata.get('read_size'),
             'latency_enabled': mount_metadata.get('latency_enabled'),

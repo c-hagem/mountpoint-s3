@@ -46,24 +46,31 @@ def mount_stub(cfg: DictConfig, mount_dir: str) -> Dict[str, Any]:
     config_parser = BenchmarkConfigParser(cfg)
     common_config = config_parser.get_common_config()
 
-    # Get stub-specific configuration
+    # Get stub-specific configuration (libfuse binary settings)
     stub_config = config_parser.get_stub_config()
     stub_binary = stub_config['stub_binary']
-    num_files = stub_config['num_files']
     background_threads = stub_config['background_threads']
     read_size = stub_config['read_size']
 
-    # Latency configuration
-    latency_config = stub_config['latency']
-    use_latency = latency_config['enabled']
-    latency_mean = latency_config['mean']  # microseconds
-    latency_stddev = latency_config['stddev']  # microseconds
+    # Get global stub configuration (shared with mountpoint stub modes)
+    stub_latency_config = config_parser.get_global_stub_latency_config()
+
+    # Number of files always equals application_workers (one file per worker)
+    num_files = common_config['application_workers']
+    file_size_gib = common_config['object_size_in_gib']
+
+    # Latency configuration (global - shared with mountpoint)
+    use_latency = stub_latency_config['enabled']
+    latency_mean = stub_latency_config['mean']  # microseconds
+    latency_stddev = stub_latency_config['stddev']  # microseconds
 
     log.info(f"Mounting libfuse stub filesystem at {mount_dir}")
-    log.info(f"Stub config - files: {num_files}, threads: {background_threads}, read_size: {read_size}")
+    log.info(f"Stub config - files: {num_files} ({file_size_gib}GiB each), threads: {background_threads}, read_size: {read_size}")
 
     if use_latency:
-        log.info(f"Latency simulation enabled - mean: {latency_mean}µs, stddev: {latency_stddev}µs")
+        log.info(f"Latency simulation enabled - distribution: {stub_latency_config['distribution']}, "
+                f"mean: {latency_mean}µs, stddev: {latency_stddev}µs "
+                f"(approx p10≈127ms, p50≈161ms, p90≈200ms)")
 
     # Create mount directory
     os.makedirs(mount_dir, exist_ok=True)
@@ -75,7 +82,7 @@ def mount_stub(cfg: DictConfig, mount_dir: str) -> Dict[str, Any]:
     stub_env['C_STUB_READSIZE'] = str(read_size)
 
     if use_latency:
-        stub_env['STUB_DISTR'] = 'normal'
+        stub_env['STUB_DISTR'] = stub_latency_config['distribution']
         stub_env['STUB_DISTR_MEAN'] = str(latency_mean)
         stub_env['STUB_DISTR_STDDEV'] = str(latency_stddev)
 
@@ -116,9 +123,11 @@ def mount_stub(cfg: DictConfig, mount_dir: str) -> Dict[str, Any]:
             "target_pid": stub_process.pid,
             "stub_process": stub_process,
             "num_files": num_files,
+            "file_size_gib": file_size_gib,
             "background_threads": background_threads,
             "read_size": read_size,
             "latency_enabled": use_latency,
+            "latency_config": stub_latency_config,
         }
 
     except Exception as e:

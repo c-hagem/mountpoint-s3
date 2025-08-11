@@ -20,6 +20,15 @@ class BenchmarkConfigParser:
         return keys
 
     def default_object_keys(self, app_workers, object_size_in_gib) -> list:
+        """
+        Generate default object keys following the pattern: j{N}_{SIZE}GiB.bin
+
+        This pattern matches:
+        - FIO's filename_format=j$jobnum_${SIZE_GIB}GiB.bin (where $jobnum starts from 0)
+        - Stub filesystem file naming (both libfuse and mountpoint stub modes)
+
+        Number of files always equals app_workers (one file per worker).
+        """
         keys = []
         for i in range(app_workers):
             keys.append(f"j{i}_{object_size_in_gib}GiB.bin")
@@ -60,18 +69,35 @@ class BenchmarkConfigParser:
             'upload_checksums': getattr(mp_cfg, 'upload_checksums', None),
         }
 
+    def get_global_stub_latency_config(self) -> Dict[str, Any]:
+        latency_cfg = getattr(self.cfg, 'stub_latency', {})
+        return {
+            'enabled': getattr(latency_cfg, 'enabled', False),
+            'distribution': getattr(latency_cfg, 'distribution', 'normal'),
+            'mean': getattr(latency_cfg, 'mean', 161000),
+            'stddev': getattr(latency_cfg, 'stddev', 28500),
+        }
+
+    def get_global_stub_files_config(self) -> Dict[str, Any]:
+        files_cfg = getattr(self.cfg, 'stub_files', {})
+        common_config = self.get_common_config()
+        return {
+            'file_size_gib': getattr(files_cfg, 'file_size_gib', None) or common_config.get('object_size_in_gib', 100),
+        }
+
     def get_stub_config(self) -> Dict[str, Any]:
         stub_cfg = getattr(self.cfg, 'stub', {})
+        common_config = self.get_common_config()
+        global_files = self.get_global_stub_files_config()
+        global_latency = self.get_global_stub_latency_config()
+
         return {
             'stub_binary': getattr(stub_cfg, 'stub_binary', './stub'),
-            'num_files': getattr(stub_cfg, 'num_files', self.get_common_config().get('application_workers', 10)),
+            'num_files': common_config['application_workers'],
+            'file_size_gib': global_files['file_size_gib'],
             'background_threads': getattr(stub_cfg, 'background_threads', 64),
             'read_size': getattr(stub_cfg, 'read_size', 4096),
-            'latency': {
-                'enabled': getattr(stub_cfg.get('latency', {}), 'enabled', False),
-                'mean': getattr(stub_cfg.get('latency', {}), 'mean', 1000),
-                'stddev': getattr(stub_cfg.get('latency', {}), 'stddev', 100),
-            }
+            'latency': global_latency
         }
 
     def get_fio_config(self) -> Dict[str, Any]:

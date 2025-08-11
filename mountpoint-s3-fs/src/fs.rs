@@ -3,11 +3,15 @@
 use bytes::Bytes;
 
 use std::collections::HashMap;
+use std::env;
 use std::ffi::{OsStr, OsString};
+use std::sync::OnceLock;
 use std::time::{Duration, UNIX_EPOCH};
 use thiserror::Error;
 use time::OffsetDateTime;
 use tracing::{Level, debug, trace};
+
+use rand_distr::{Distribution, Normal};
 
 use fuser::consts::FOPEN_DIRECT_IO;
 use fuser::{FileAttr, KernelConfig};
@@ -48,7 +52,21 @@ pub use sse::{ServerSideEncryption, SseCorruptedError};
 mod time_to_live;
 pub use time_to_live::TimeToLive;
 
-pub const FUSE_ROOT_INODE: InodeNo = 1u64;
+pub const FUSE_ROOT_INODE: InodeNo = 1;
+
+/// Configuration for latency simulation in stub modes
+struct LatencyConfig {
+    mean: f64,
+    stddev: f64,
+}
+
+impl LatencyConfig {
+    fn sample_latency(&self) -> f64 {
+        let mut rng = rand::thread_rng();
+        let normal = Normal::new(self.mean, self.stddev).unwrap();
+        normal.sample(&mut rng).max(0.0) // Ensure non-negative latency
+    }
+}
 
 pub struct S3Filesystem<Client>
 where
@@ -433,6 +451,10 @@ where
             // This compile-time configuration allows us to return simply zeroes to FUSE,
             // allowing us to remove Mountpoint's logic from the loop and compare performance
             // with and without the rest of Mountpoint's logic (such as file handle interaction, prefetcher, etc.).
+
+            // Simulate latency if configured
+            Self::simulate_stub_latency();
+
             return Ok(vec![0u8; size as usize].into());
         }
 
@@ -782,6 +804,42 @@ where
             .await?;
         tracing::trace!("rename complete");
         Ok(())
+    }
+
+    /// Simulate latency for stub modes based on environment variables
+    fn simulate_stub_latency() {
+        static LATENCY_CONFIG: OnceLock<Option<LatencyConfig>> = OnceLock::new();
+
+        let config = LATENCY_CONFIG.get_or_init(|| {
+            // Check if latency simulation is enabled
+            if env::var("STUB_DISTR").unwrap_or_default() != "normal" {
+                return None;
+            }
+
+            let mean = env::var("STUB_DISTR_MEAN")
+                .ok()
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(161000.0); // Default 161ms in microseconds
+
+            let stddev = env::var("STUB_DISTR_STDDEV")
+                .ok()
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(28500.0); // Default stddev in microseconds
+
+            if mean <= 0.0 || stddev <= 0.0 {
+                return None;
+            }
+
+            Some(LatencyConfig { mean, stddev })
+        });
+
+        if let Some(config) = config {
+            let latency_us = config.sample_latency();
+            if latency_us > 0.0 {
+                let duration = Duration::from_micros(latency_us as u64);
+                std::thread::sleep(duration);
+            }
+        }
     }
 }
 
