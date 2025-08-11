@@ -11,7 +11,7 @@ import hydra
 from omegaconf import DictConfig
 
 from benchmarks.benchmark_config_parser import BenchmarkConfigParser
-from benchmarks.mountpoint import mount_mp, cleanup_mp
+from benchmarks.mount_utils import mount_filesystem, cleanup_filesystem
 
 log = logging.getLogger(__name__)
 
@@ -46,8 +46,9 @@ class FioBenchmark(BaseBenchmark):
 
     def setup(self) -> Dict[str, Any]:
         self.mount_dir = tempfile.mkdtemp(suffix=".mountpoint-s3")
-        mount_metadata = mount_mp(self.cfg, self.mount_dir)
+        mount_metadata = mount_filesystem(self.cfg, self.mount_dir)
         self.target_pid = mount_metadata["target_pid"]
+        self.mount_metadata = mount_metadata
         self.metadata.update(mount_metadata)
         return self.metadata
 
@@ -95,5 +96,5 @@ class FioBenchmark(BaseBenchmark):
         self.metadata["fio_output_file"] = self.fio_output_filepath
 
     def post_process(self) -> None:
-        cleanup_mp(self.mount_dir)
+        cleanup_filesystem(self.mount_metadata)
         return self.metadata

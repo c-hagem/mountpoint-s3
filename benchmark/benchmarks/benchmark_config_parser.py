@@ -30,6 +30,7 @@ class BenchmarkConfigParser:
             'application_workers': getattr(self.cfg, 'application_workers', 1),
             'benchmark_type': getattr(self.cfg, 'benchmark_type', 'fio'),
             'max_throughput_gbps': getattr(self.cfg.network, 'maximum_throughput_gbps', 100),
+            'mount_type': getattr(self.cfg, 'mount_type', 'mountpoint'),
             'network_interfaces': getattr(self.cfg.network, 'interface_names', []),
             'object_size_in_gib': getattr(self.cfg, 'object_size_in_gib', 100),
             'read_part_size': getattr(self.cfg, 'read_part_size', None),
@@ -57,6 +58,20 @@ class BenchmarkConfigParser:
             'prefix': getattr(mp_cfg, 'prefix', None),
             'stub_mode': getattr(mp_cfg, 'stub_mode', 'off'),
             'upload_checksums': getattr(mp_cfg, 'upload_checksums', None),
+        }
+
+    def get_stub_config(self) -> Dict[str, Any]:
+        stub_cfg = getattr(self.cfg, 'stub', {})
+        return {
+            'stub_binary': getattr(stub_cfg, 'stub_binary', './stub'),
+            'num_files': getattr(stub_cfg, 'num_files', self.get_common_config().get('application_workers', 10)),
+            'background_threads': getattr(stub_cfg, 'background_threads', 64),
+            'read_size': getattr(stub_cfg, 'read_size', 4096),
+            'latency': {
+                'enabled': getattr(stub_cfg.get('latency', {}), 'enabled', False),
+                'mean': getattr(stub_cfg.get('latency', {}), 'mean', 1000),
+                'stddev': getattr(stub_cfg.get('latency', {}), 'stddev', 100),
+            }
         }
 
     def get_fio_config(self) -> Dict[str, Any]:
