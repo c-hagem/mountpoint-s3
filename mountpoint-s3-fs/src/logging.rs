@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::thread;
 
 use anyhow::Context;
-use rand::Rng;
 use rand::distr::Alphanumeric;
 use rand::distr::SampleString;
 use signal_hook::consts::SIGUSR2;

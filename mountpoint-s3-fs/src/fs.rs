@@ -62,7 +62,7 @@ struct LatencyConfig {
 
 impl LatencyConfig {
     fn sample_latency(&self) -> f64 {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let normal = Normal::new(self.mean, self.stddev).unwrap();
         normal.sample(&mut rng).max(0.0) // Ensure non-negative latency
     }
@@ -835,6 +835,7 @@ where
 
         if let Some(config) = config {
             let latency_us = config.sample_latency();
+            metrics::histogram!("stub.simulated_latency_us").record(latency_us);
             if latency_us > 0.0 {
                 let duration = Duration::from_micros(latency_us as u64);
                 std::thread::sleep(duration);
