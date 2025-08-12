@@ -11,6 +11,7 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use tracing::{Level, debug, trace};
 
+use rand::Rng;
 use rand_distr::{Distribution, Normal};
 
 use fuser::consts::FOPEN_DIRECT_IO;
@@ -63,8 +64,33 @@ struct LatencyConfig {
 impl LatencyConfig {
     fn sample_latency(&self) -> f64 {
         let mut rng = rand::rng();
-        let normal = Normal::new(self.mean, self.stddev).unwrap();
-        normal.sample(&mut rng).max(0.0) // Ensure non-negative latency
+        let rand_val = rng.random::<f64>();
+
+        if rand_val < 0.0001 {
+            // 0.01% chance of very high spike (27k-266k us range)
+            let spike_mean = 100000.0; // 100ms
+            let spike_stddev = 80000.0;
+            let spike_normal = Normal::new(spike_mean, spike_stddev).unwrap();
+            spike_normal.sample(&mut rng)
+        } else if rand_val < 0.001 {
+            // 0.09% chance of p99.9 latency (800-875 us range)
+            let high_mean = 850.0;
+            let high_stddev = 100.0;
+            let high_normal = Normal::new(high_mean, high_stddev).unwrap();
+            high_normal.sample(&mut rng)
+        } else if rand_val < 0.01 {
+            // 0.9% chance of p99 latency (500-540 us range)
+            let p99_mean = 520.0;
+            let p99_stddev = 50.0;
+            let p99_normal = Normal::new(p99_mean, p99_stddev).unwrap();
+            p99_normal.sample(&mut rng)
+        } else {
+            // 99% normal case: mean ~210us, matching real data
+            let normal_mean = 210.0;
+            let normal_stddev = 40.0;
+            let normal = Normal::new(normal_mean, normal_stddev).unwrap();
+            normal.sample(&mut rng)
+        }
     }
 }
 
