@@ -58,8 +58,13 @@ def mount_mp(cfg: DictConfig, mount_dir: str) -> Dict[str, Any]:
 
     os.makedirs(MP_LOGS_DIRECTORY, exist_ok=True)
 
-    mountpoint_version_output = subprocess.check_output([*mountpoint_args, "--version"]).decode("utf-8")
-    log.info("Mountpoint version: %s", mountpoint_version_output.strip())
+    # Only check version for pre-built binaries to avoid double compilation with cargo run
+    if mp_config['mountpoint_binary'] is not None:
+        mountpoint_version_output = subprocess.check_output([*mountpoint_args, "--version"]).decode("utf-8")
+        log.info("Mountpoint version: %s", mountpoint_version_output.strip())
+    else:
+        mountpoint_version_output = "cargo run (version check skipped to avoid double compilation)"
+        log.info("Using cargo run, skipping version check to avoid double compilation")
 
     subprocess_args = [
         *mountpoint_args,
