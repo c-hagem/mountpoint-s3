@@ -11,6 +11,7 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use tracing::{Level, debug, trace};
 
+use rand::RngCore;
 use rand_distr::{Distribution, Normal};
 
 use fuser::consts::FOPEN_DIRECT_IO;
@@ -65,6 +66,34 @@ impl LatencyConfig {
         let mut rng = rand::rng();
         let normal = Normal::new(self.mean, self.stddev).unwrap();
         normal.sample(&mut rng).max(0.0) // Ensure non-negative latency
+    }
+}
+
+/// Static buffer for stub filesystem operations containing random data
+struct StubBuffer {
+    data: Vec<u8>,
+}
+
+impl StubBuffer {
+    fn new() -> Self {
+        const MAX_BUFFER_SIZE: usize = 100 * 1024 * 1024; // 100 MB
+        let mut data = vec![0u8; MAX_BUFFER_SIZE];
+        let mut rng = rand::rng();
+        rng.fill_bytes(&mut data);
+
+        Self { data }
+    }
+
+    fn get_data(&self, offset: usize, size: usize) -> Vec<u8> {
+        let start = offset % self.data.len();
+        let mut result = Vec::with_capacity(size);
+
+        for i in 0..size {
+            let index = (start + i) % self.data.len();
+            result.push(self.data[index]);
+        }
+
+        result
     }
 }
 
@@ -448,14 +477,17 @@ where
         );
 
         if option_env!("MOUNTPOINT_BUILD_STUB_FS_HANDLER").is_some() {
-            // This compile-time configuration allows us to return simply zeroes to FUSE,
-            // allowing us to remove Mountpoint's logic from the loop and compare performance
-            // with and without the rest of Mountpoint's logic (such as file handle interaction, prefetcher, etc.).
+            // This compile-time configuration allows us to return random data to FUSE,
+            // using a static 100MB buffer to avoid optimizations that might occur with zeros
+            // while still avoiding actual S3 calls.
 
             // Simulate latency if configured
             Self::simulate_stub_latency();
 
-            return Ok(vec![0u8; size as usize].into());
+            static STUB_BUFFER: OnceLock<StubBuffer> = OnceLock::new();
+            let buffer = STUB_BUFFER.get_or_init(StubBuffer::new);
+
+            return Ok(buffer.get_data(offset as usize, size as usize).into());
         }
 
         let handle = {
