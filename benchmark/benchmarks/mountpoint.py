@@ -125,12 +125,11 @@ def mount_mp(cfg: DictConfig, mount_dir: str) -> Dict[str, Any]:
     # Set up latency simulation environment variables for all stub modes
     if stub_mode != "off" and stub_latency_config['enabled']:
         mp_env["STUB_DISTR"] = stub_latency_config['distribution']
-        mp_env["STUB_DISTR_MEAN"] = str(stub_latency_config['mean'])
-        mp_env["STUB_DISTR_STDDEV"] = str(stub_latency_config['stddev'])
+        mp_env["STUB_LATENCY_TIERS"] = stub_latency_config['tiers']
         log.info(f"Enabling latency simulation for stub mode {stub_mode}: "
                 f"distribution={stub_latency_config['distribution']}, "
-                f"mean={stub_latency_config['mean']}μs, "
-                f"stddev={stub_latency_config['stddev']}μs")
+                f"tiers={stub_latency_config['tiers']} "
+                f"(format: default_mean,default_stddev,p90_mean,p90_stddev,p99_mean,p99_stddev,p999_mean,p999_stddev)")
 
     # Set up global stub file configuration environment variables for all stub modes
     if stub_mode != "off":

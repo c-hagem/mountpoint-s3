@@ -61,16 +61,14 @@ def mount_stub(cfg: DictConfig, mount_dir: str) -> Dict[str, Any]:
 
     # Latency configuration (global - shared with mountpoint)
     use_latency = stub_latency_config['enabled']
-    latency_mean = stub_latency_config['mean']  # microseconds
-    latency_stddev = stub_latency_config['stddev']  # microseconds
 
     log.info(f"Mounting libfuse stub filesystem at {mount_dir}")
     log.info(f"Stub config - files: {num_files} ({file_size_gib}GiB each), threads: {background_threads}, read_size: {read_size}")
 
     if use_latency:
         log.info(f"Latency simulation enabled - distribution: {stub_latency_config['distribution']}, "
-                f"mean: {latency_mean}µs, stddev: {latency_stddev}µs "
-                f"(approx p10≈127ms, p50≈161ms, p90≈200ms)")
+                f"tiers: {stub_latency_config['tiers']} "
+                f"(format: default_mean,default_stddev,p90_mean,p90_stddev,p99_mean,p99_stddev,p999_mean,p999_stddev)")
 
     # Create mount directory
     os.makedirs(mount_dir, exist_ok=True)
@@ -83,8 +81,7 @@ def mount_stub(cfg: DictConfig, mount_dir: str) -> Dict[str, Any]:
 
     if use_latency:
         stub_env['STUB_DISTR'] = stub_latency_config['distribution']
-        stub_env['STUB_DISTR_MEAN'] = str(latency_mean)
-        stub_env['STUB_DISTR_STDDEV'] = str(latency_stddev)
+        stub_env['STUB_LATENCY_TIERS'] = stub_latency_config['tiers']
 
     # Build subprocess arguments
     subprocess_args = [

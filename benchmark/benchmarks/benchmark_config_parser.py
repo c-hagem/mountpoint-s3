@@ -74,6 +74,8 @@ class BenchmarkConfigParser:
         return {
             'enabled': getattr(latency_cfg, 'enabled', False),
             'distribution': getattr(latency_cfg, 'distribution', 'normal'),
+            'tiers': getattr(latency_cfg, 'tiers', '180,40,400,60,650,100,2000,5000'),
+            # Legacy support for old mean/stddev format (fallback only)
             'mean': getattr(latency_cfg, 'mean', 161000),
             'stddev': getattr(latency_cfg, 'stddev', 28500),
         }

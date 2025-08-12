@@ -11,9 +11,6 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use tracing::{Level, debug, trace};
 
-use rand::Rng;
-use rand_distr::{Distribution, Normal};
-
 use fuser::consts::FOPEN_DIRECT_IO;
 use fuser::{FileAttr, KernelConfig};
 use mountpoint_s3_client::ObjectClient;
@@ -53,46 +50,9 @@ pub use sse::{ServerSideEncryption, SseCorruptedError};
 mod time_to_live;
 pub use time_to_live::TimeToLive;
 
+use crate::stubbing::LatencyConfig;
+
 pub const FUSE_ROOT_INODE: InodeNo = 1;
-
-/// Configuration for latency simulation in stub modes
-struct LatencyConfig {
-    mean: f64,
-    stddev: f64,
-}
-
-impl LatencyConfig {
-    fn sample_latency(&self) -> f64 {
-        let mut rng = rand::rng();
-        let rand_val = rng.random::<f64>();
-
-        if rand_val < 0.0001 {
-            // 0.01% chance of very high spike (27k-266k us range)
-            let spike_mean = 100000.0; // 100ms
-            let spike_stddev = 80000.0;
-            let spike_normal = Normal::new(spike_mean, spike_stddev).unwrap();
-            spike_normal.sample(&mut rng)
-        } else if rand_val < 0.001 {
-            // 0.09% chance of p99.9 latency (800-875 us range)
-            let high_mean = 850.0;
-            let high_stddev = 100.0;
-            let high_normal = Normal::new(high_mean, high_stddev).unwrap();
-            high_normal.sample(&mut rng)
-        } else if rand_val < 0.01 {
-            // 0.9% chance of p99 latency (500-540 us range)
-            let p99_mean = 520.0;
-            let p99_stddev = 50.0;
-            let p99_normal = Normal::new(p99_mean, p99_stddev).unwrap();
-            p99_normal.sample(&mut rng)
-        } else {
-            // 99% normal case: mean ~210us, matching real data
-            let normal_mean = 210.0;
-            let normal_stddev = 40.0;
-            let normal = Normal::new(normal_mean, normal_stddev).unwrap();
-            normal.sample(&mut rng)
-        }
-    }
-}
 
 pub struct S3Filesystem<Client>
 where
@@ -842,21 +802,7 @@ where
                 return None;
             }
 
-            let mean = env::var("STUB_DISTR_MEAN")
-                .ok()
-                .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or(161000.0); // Default 161ms in microseconds
-
-            let stddev = env::var("STUB_DISTR_STDDEV")
-                .ok()
-                .and_then(|s| s.parse::<f64>().ok())
-                .unwrap_or(28500.0); // Default stddev in microseconds
-
-            if mean <= 0.0 || stddev <= 0.0 {
-                return None;
-            }
-
-            Some(LatencyConfig { mean, stddev })
+            Some(LatencyConfig::from_env())
         });
 
         if let Some(config) = config {

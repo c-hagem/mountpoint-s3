@@ -17,6 +17,7 @@ pub mod metrics;
 pub mod object;
 pub mod prefetch;
 pub mod s3;
+pub mod stubbing;
 mod superblock;
 mod sync;
 pub mod upload;

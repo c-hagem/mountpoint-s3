@@ -23,19 +23,25 @@ mount_type: "stub"
 
 # ===== Global stub/latency simulation configuration =====
 # These settings apply to both libfuse stub and mountpoint stub modes
-# Simulates realistic S3 request latencies for more accurate benchmarking
+# Simulates realistic S3 request latencies using a tiered distribution approach
 stub_latency:
     enabled: false # Enable latency simulation for all stub modes
     distribution: "normal" # Distribution type: currently only "normal" supported
-    # Default values simulate realistic S3 latencies:
-    # - p50 (median): ~161ms
-    # - p10: ~127ms
-    # - p90: ~200ms
-    mean: 161000 # Mean latency in microseconds (161ms)
-    stddev: 28500 # Standard deviation in microseconds
-    # Alternative latency profiles (uncomment to use):
-    # Fast network: mean=50000, stddev=10000  # ~50ms ±20ms
-    # Slow network: mean=300000, stddev=50000 # ~300ms ±100ms
+
+    # Tiered latency configuration using comma-separated values:
+    # Format: "default_mean,default_stddev,p90_mean,p90_stddev,p99_mean,p99_stddev,p999_mean,p999_stddev"
+    #
+    # Tier breakdown:
+    # - 90% of requests use default tier (fast baseline)
+    # - 9% use p90 tier (moderate latency)
+    # - 0.9% use p99 tier (high latency)
+    # - 0.1% use p99.9 tier (tail spikes)
+    tiers: "180,40,400,60,650,100,2000,5000" # Default profile matching real S3 data
+
+    # Alternative latency profiles (replace tiers value above):
+    # Fast network: "100,20,200,30,350,50,800,200"     # Low latencies across all tiers
+    # Slow network: "300,60,800,120,1500,300,8000,15000" # High latencies with more variance
+    # High variance: "200,80,500,150,1000,300,5000,10000" # More variable for stress testing
 
 # Global stub file configuration
 # These settings control the files presented by all stub modes
