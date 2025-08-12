@@ -69,32 +69,16 @@ impl LatencyConfig {
     }
 }
 
-/// Static buffer for stub filesystem operations containing random data
-struct StubBuffer {
-    data: Vec<u8>,
-}
-
-impl StubBuffer {
-    fn new() -> Self {
-        const MAX_BUFFER_SIZE: usize = 100 * 1024 * 1024; // 100 MB
-        let mut data = vec![0u8; MAX_BUFFER_SIZE];
-        let mut rng = rand::rng();
-        rng.fill_bytes(&mut data);
-
-        Self { data }
+/// Generate stub data without any locking overhead
+fn get_stub_data(offset: usize, size: usize) -> Vec<u8> {
+    let mut result = Vec::with_capacity(size);
+    for i in 0..size {
+        // Simple pseudo-random pattern based on position to avoid OS optimizations
+        let pos = offset + i;
+        let byte = ((pos.wrapping_mul(31).wrapping_add(pos / 256)) & 0xFF) as u8;
+        result.push(byte);
     }
-
-    fn get_data(&self, offset: usize, size: usize) -> Vec<u8> {
-        let start = offset % self.data.len();
-        let mut result = Vec::with_capacity(size);
-
-        for i in 0..size {
-            let index = (start + i) % self.data.len();
-            result.push(self.data[index]);
-        }
-
-        result
-    }
+    result
 }
 
 pub struct S3Filesystem<Client>
@@ -484,10 +468,7 @@ where
             // Simulate latency if configured
             Self::simulate_stub_latency();
 
-            static STUB_BUFFER: OnceLock<StubBuffer> = OnceLock::new();
-            let buffer = STUB_BUFFER.get_or_init(StubBuffer::new);
-
-            return Ok(buffer.get_data(offset as usize, size as usize).into());
+            return Ok(get_stub_data(offset as usize, size as usize).into());
         }
 
         let handle = {
