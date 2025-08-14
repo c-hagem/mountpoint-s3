@@ -120,6 +120,7 @@ impl StubLatencyLoader {
                     trimmed.parse().ok()
                 }
             })
+            .map(|latency| (latency - 40.0).max(0.0)) // Reduce by 40μs, minimum 0
             .collect();
 
         if latencies.is_empty() {
@@ -245,16 +246,12 @@ impl LatencyLogger {
         let _ = self.sender.try_send(latency_us);
     }
 
-    /// Create a timestamp string for file naming (similar to Mountpoint's format)
+    /// Create a timestamp string for file naming (simple format)
     fn create_timestamp() -> String {
         let now = std::time::SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default();
-        let secs = now.as_secs();
-
-        // Convert to a simple timestamp format like "20240101-120000"
-        let datetime = secs + 946684800; // Unix epoch to year 2000 offset approximation
-        format!("{}", datetime)
+        format!("{}", now.as_secs())
     }
 }
 
