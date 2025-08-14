@@ -120,7 +120,7 @@ impl StubLatencyLoader {
                     trimmed.parse().ok()
                 }
             })
-            .map(|latency| (latency - 40.0).max(0.0)) // Reduce by 40μs, minimum 0
+            .map(|latency: f64| (latency as f64 - 40.0).max(0.0)) // Reduce by 40μs, minimum 0
             .collect();
 
         if latencies.is_empty() {
