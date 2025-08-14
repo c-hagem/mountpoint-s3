@@ -4,10 +4,15 @@ use bytes::Bytes;
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::time::{Duration, UNIX_EPOCH};
+use std::fs::OpenOptions;
+use std::io::{BufWriter, Write};
+use std::sync::mpsc::{self, Sender, SyncSender};
+use std::sync::{Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use thiserror::Error;
 use time::OffsetDateTime;
-use tracing::{Level, debug, trace};
+use tracing::{Level, debug, trace, warn};
 
 use fuser::consts::FOPEN_DIRECT_IO;
 use fuser::{FileAttr, KernelConfig};
@@ -49,6 +54,96 @@ mod time_to_live;
 pub use time_to_live::TimeToLive;
 
 pub const FUSE_ROOT_INODE: InodeNo = 1u64;
+
+/// Static latency logger for high-performance latency recording.
+///
+/// To enable latency logging, set the environment variable `MOUNTPOINT_LATENCY_LOGGING=1`.
+/// When enabled, all read operation latencies will be written to `latencies.txt` in microseconds.
+///
+/// The implementation uses a background thread with buffered I/O to minimize performance impact
+/// on read operations. If the logging channel becomes full, samples are dropped rather than
+/// blocking the read path.
+///
+/// Example usage:
+/// ```bash
+/// export MOUNTPOINT_LATENCY_LOGGING=1
+/// ./mountpoint-s3 bucket /mnt/point
+/// # Read latencies will be logged to latencies.txt
+///
+/// Configuration:
+/// - `MOUNTPOINT_LATENCY_LOGGING=1` - Enable latency logging
+/// - `MOUNTPOINT_LATENCY_CHANNEL_SIZE=N` - Set channel buffer size (default: 10000)
+/// ```
+static LATENCY_LOGGER: OnceLock<Option<LatencyLogger>> = OnceLock::new();
+
+/// High-performance latency logger with buffered background writing
+#[derive(Debug)]
+struct LatencyLogger {
+    sender: SyncSender<f64>,
+}
+
+impl LatencyLogger {
+    /// Create a new LatencyLogger that writes to latencies.txt
+    fn new() -> Option<Self> {
+        // Check if latency logging is enabled via environment variable
+        if std::env::var("MOUNTPOINT_LATENCY_LOGGING").is_err() {
+            return None;
+        }
+
+        // Use bounded channel for better performance - configurable via environment variable
+        let channel_size = std::env::var("MOUNTPOINT_LATENCY_CHANNEL_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(10000); // Default to 10k samples buffer
+
+        let (sender, receiver) = mpsc::sync_channel::<f64>(channel_size);
+
+        // Spawn background writer thread
+        thread::spawn(move || {
+            let file = match OpenOptions::new().create(true).append(true).open("latencies.txt") {
+                Ok(file) => file,
+                Err(e) => {
+                    warn!("Failed to open latencies.txt for writing: {}", e);
+                    return;
+                }
+            };
+
+            let mut writer = BufWriter::with_capacity(8192, file);
+            let mut write_count = 0;
+            const FLUSH_INTERVAL: usize = 1000; // Flush every 1000 writes for better performance
+
+            // Process latency values from the channel
+            while let Ok(latency_us) = receiver.recv() {
+                if let Err(e) = writeln!(writer, "{:.3}", latency_us) {
+                    warn!("Failed to write latency to file: {}", e);
+                    break;
+                }
+
+                write_count += 1;
+
+                // Flush periodically to ensure data isn't lost, but not on every write
+                if write_count % FLUSH_INTERVAL == 0 {
+                    if let Err(e) = writer.flush() {
+                        warn!("Failed to flush latency file: {}", e);
+                        break;
+                    }
+                }
+            }
+
+            // Final flush on shutdown
+            let _ = writer.flush();
+        });
+
+        Some(LatencyLogger { sender })
+    }
+
+    /// Log a latency value (non-blocking)
+    fn log_latency(&self, latency_us: f64) {
+        // Non-blocking send - if the channel is full, we drop the sample
+        // to avoid impacting read performance
+        let _ = self.sender.try_send(latency_us);
+    }
+}
 
 #[derive(Debug)]
 pub struct S3Filesystem<Client>
@@ -433,6 +528,8 @@ where
         _flags: i32,
         _lock: Option<u64>,
     ) -> Result<Bytes, Error> {
+        let start_time = Instant::now();
+
         trace!(
             "fs:read with ino {:?} fh {:?} offset {:?} size {:?}",
             ino, fh, offset, size
@@ -459,11 +556,22 @@ where
             FileHandleState::Write(_) => return Err(err!(libc::EBADF, "file handle is not open for reads")),
         };
 
-        request
+        let result = request
             .read(offset as u64, size as usize)
             .await?
             .into_bytes()
-            .map_err(|e| err!(libc::EIO, source:e, "integrity error"))
+            .map_err(|e| err!(libc::EIO, source:e, "integrity error"));
+
+        // Log latency for non-stubbed reads
+        let latency_us = start_time.elapsed().as_micros() as f64;
+
+        // Initialize logger on first use to avoid overhead if not needed
+        let logger = LATENCY_LOGGER.get_or_init(|| LatencyLogger::new());
+        if let Some(logger) = logger {
+            logger.log_latency(latency_us);
+        }
+
+        result
     }
 
     pub async fn mknod(
