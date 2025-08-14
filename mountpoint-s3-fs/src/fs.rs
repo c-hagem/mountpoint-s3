@@ -58,7 +58,7 @@ pub const FUSE_ROOT_INODE: InodeNo = 1u64;
 /// Static latency logger for high-performance latency recording.
 ///
 /// To enable latency logging, set the environment variable `MOUNTPOINT_LATENCY_LOGGING=1`.
-/// When enabled, all read operation latencies will be written to `latencies.txt` in microseconds.
+/// When enabled, all read operation latencies will be written to a timestamped file in microseconds.
 ///
 /// The implementation uses a background thread with buffered I/O to minimize performance impact
 /// on read operations. If the logging channel becomes full, samples are dropped rather than
@@ -66,14 +66,20 @@ pub const FUSE_ROOT_INODE: InodeNo = 1u64;
 ///
 /// Example usage:
 /// ```bash
+/// # Basic usage - creates latencies-TIMESTAMP.txt in current directory
 /// export MOUNTPOINT_LATENCY_LOGGING=1
 /// ./mountpoint-s3 bucket /mnt/point
-/// # Read latencies will be logged to latencies.txt
+///
+/// # Use specific directory - creates latencies-TIMESTAMP.txt in that directory
+/// export MOUNTPOINT_LATENCY_LOGGING=1
+/// export MOUNTPOINT_LATENCY_DIR=/var/log/mountpoint-s3
+/// ./mountpoint-s3 --log-directory /var/log/mountpoint-s3 bucket /mnt/point
+/// ```
 ///
 /// Configuration:
 /// - `MOUNTPOINT_LATENCY_LOGGING=1` - Enable latency logging
+/// - `MOUNTPOINT_LATENCY_DIR=PATH` - Set directory for latency log file (default: current directory)
 /// - `MOUNTPOINT_LATENCY_CHANNEL_SIZE=N` - Set channel buffer size (default: 10000)
-/// ```
 static LATENCY_LOGGER: OnceLock<Option<LatencyLogger>> = OnceLock::new();
 
 /// High-performance latency logger with buffered background writing
@@ -83,12 +89,20 @@ struct LatencyLogger {
 }
 
 impl LatencyLogger {
-    /// Create a new LatencyLogger that writes to latencies.txt
+    /// Create a new LatencyLogger that writes to a timestamped file
     fn new() -> Option<Self> {
         // Check if latency logging is enabled via environment variable
         if std::env::var("MOUNTPOINT_LATENCY_LOGGING").is_err() {
             return None;
         }
+
+        // Get directory from environment variable or use current directory
+        let log_dir = std::env::var("MOUNTPOINT_LATENCY_DIR").unwrap_or_else(|_| ".".to_string());
+
+        // Create timestamped filename
+        let timestamp = crate::logging::log_file_name_time_suffix();
+        let filename = format!("latencies-{}.txt", timestamp);
+        let file_path = Path::new(&log_dir).join(filename);
 
         // Use bounded channel for better performance - configurable via environment variable
         let channel_size = std::env::var("MOUNTPOINT_LATENCY_CHANNEL_SIZE")
@@ -100,10 +114,36 @@ impl LatencyLogger {
 
         // Spawn background writer thread
         thread::spawn(move || {
-            let file = match OpenOptions::new().create(true).append(true).open("latencies.txt") {
+            // Create directory if it doesn't exist
+            if let Some(parent_dir) = file_path.parent() {
+                let mut dir_builder = DirBuilder::new();
+                dir_builder.recursive(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::DirBuilderExt;
+                    dir_builder.mode(0o750);
+                }
+                if let Err(e) = dir_builder.create(parent_dir) {
+                    if e.kind() != std::io::ErrorKind::AlreadyExists {
+                        warn!("Failed to create latency log directory: {}", e);
+                        return;
+                    }
+                }
+            }
+
+            // Create file with proper permissions
+            let mut file_options = OpenOptions::new();
+            file_options.create(true).append(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                file_options.mode(0o640);
+            }
+
+            let file = match file_options.open(&file_path) {
                 Ok(file) => file,
                 Err(e) => {
-                    warn!("Failed to open latencies.txt for writing: {}", e);
+                    warn!("Failed to open latency file {:?} for writing: {}", file_path, e);
                     return;
                 }
             };
