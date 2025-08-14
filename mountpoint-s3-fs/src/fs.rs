@@ -4,10 +4,11 @@ use bytes::Bytes;
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::fs::OpenOptions;
+use std::fs::{DirBuilder, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::sync::mpsc::{self, Sender, SyncSender};
-use std::sync::{Mutex, OnceLock};
+use std::path::Path;
+use std::sync::OnceLock;
+use std::sync::mpsc::{self, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use thiserror::Error;
@@ -55,6 +56,12 @@ pub use time_to_live::TimeToLive;
 
 pub const FUSE_ROOT_INODE: InodeNo = 1u64;
 
+// Static 1MB buffer of zeros for efficient stubbed reads
+static STUB_ZERO_BUFFER: [u8; 1024 * 1024] = [0; 1024 * 1024];
+
+// Static stubbed latency loader for performance testing
+static STUB_LATENCY_LOADER: OnceLock<Option<StubLatencyLoader>> = OnceLock::new();
+
 /// Static latency logger for high-performance latency recording.
 ///
 /// To enable latency logging, set the environment variable `MOUNTPOINT_LATENCY_LOGGING=1`.
@@ -82,6 +89,60 @@ pub const FUSE_ROOT_INODE: InodeNo = 1u64;
 /// - `MOUNTPOINT_LATENCY_CHANNEL_SIZE=N` - Set channel buffer size (default: 10000)
 static LATENCY_LOGGER: OnceLock<Option<LatencyLogger>> = OnceLock::new();
 
+/// Stubbed latency loader for performance testing
+#[derive(Debug)]
+struct StubLatencyLoader {
+    latencies: Arc<Vec<f64>>,
+    index: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl StubLatencyLoader {
+    /// Create a new StubLatencyLoader from environment configuration
+    fn new() -> Option<Self> {
+        // Only load if stubbed latency file is specified
+        let latency_file = std::env::var("MOUNTPOINT_STUB_LATENCY_FILE").ok()?;
+
+        let content = match std::fs::read_to_string(&latency_file) {
+            Ok(content) => content,
+            Err(e) => {
+                warn!("Failed to read stub latency file {}: {}", latency_file, e);
+                return None;
+            }
+        };
+
+        let latencies: Vec<f64> = content
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    None
+                } else {
+                    trimmed.parse().ok()
+                }
+            })
+            .collect();
+
+        if latencies.is_empty() {
+            warn!("No valid latency values found in file: {}", latency_file);
+            return None;
+        }
+
+        debug!("Loaded {} stub latency values from file", latencies.len());
+
+        Some(Self {
+            latencies: Arc::new(latencies),
+            index: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+    }
+
+    /// Get the next latency value (cycling through the array)
+    fn next_latency(&self) -> f64 {
+        let current_index = self.index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let value_index = current_index % self.latencies.len();
+        self.latencies[value_index]
+    }
+}
+
 /// High-performance latency logger with buffered background writing
 #[derive(Debug)]
 struct LatencyLogger {
@@ -100,7 +161,7 @@ impl LatencyLogger {
         let log_dir = std::env::var("MOUNTPOINT_LATENCY_DIR").unwrap_or_else(|_| ".".to_string());
 
         // Create timestamped filename
-        let timestamp = crate::logging::log_file_name_time_suffix();
+        let timestamp = Self::create_timestamp();
         let filename = format!("latencies-{}.txt", timestamp);
         let file_path = Path::new(&log_dir).join(filename);
 
@@ -182,6 +243,18 @@ impl LatencyLogger {
         // Non-blocking send - if the channel is full, we drop the sample
         // to avoid impacting read performance
         let _ = self.sender.try_send(latency_us);
+    }
+
+    /// Create a timestamp string for file naming (similar to Mountpoint's format)
+    fn create_timestamp() -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = now.as_secs();
+
+        // Convert to a simple timestamp format like "20240101-120000"
+        let datetime = secs + 946684800; // Unix epoch to year 2000 offset approximation
+        format!("{}", datetime)
     }
 }
 
@@ -579,7 +652,25 @@ where
             // This compile-time configuration allows us to return simply zeroes to FUSE,
             // allowing us to remove Mountpoint's logic from the loop and compare performance
             // with and without the rest of Mountpoint's logic (such as file handle interaction, prefetcher, etc.).
-            return Ok(vec![0u8; size as usize].into());
+
+            // Get latency from loaded file if available, or use zero latency
+            let latency_us = {
+                let loader = STUB_LATENCY_LOADER.get_or_init(|| StubLatencyLoader::new());
+                loader.as_ref().map(|l| l.next_latency()).unwrap_or(0.0)
+            };
+
+            // Wait for the specified latency to simulate real I/O timing
+            if latency_us > 0.0 {
+                let duration = std::time::Duration::from_micros(latency_us as u64);
+                std::thread::sleep(duration);
+            }
+
+            // Use static buffer for reads up to 1MB, allocate for larger reads
+            return if size as usize <= STUB_ZERO_BUFFER.len() {
+                Ok(Bytes::from_static(&STUB_ZERO_BUFFER[..size as usize]))
+            } else {
+                Ok(vec![0u8; size as usize].into())
+            };
         }
 
         let handle = {
