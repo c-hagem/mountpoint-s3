@@ -15,6 +15,7 @@ use mountpoint_s3_client::ObjectClient;
 use mountpoint_s3_client::types::ChecksumAlgorithm;
 
 use crate::async_util::Runtime;
+use crate::latency::LatencyTracker;
 use crate::logging;
 use crate::mem_limiter::MemoryLimiter;
 use crate::memory::PagedPool;
@@ -50,6 +51,17 @@ pub use time_to_live::TimeToLive;
 
 pub const FUSE_ROOT_INODE: InodeNo = 1u64;
 
+/// S3-backed FUSE filesystem with optional latency tracking
+///
+/// # Latency Tracking
+///
+/// Latency tracking can be enabled by setting the `MOUNTPOINT_LATENCY_FILE` environment variable:
+/// ```bash
+/// export MOUNTPOINT_LATENCY_FILE=/tmp/read_latencies.csv
+/// ```
+///
+/// This will create a CSV file with periodic latency statistics including percentiles.
+/// The tracking uses HDR Histogram for accurate latency distribution capture with minimal overhead.
 pub struct S3Filesystem<Client>
 where
     Client: ObjectClient + Clone + Send + Sync + 'static,
@@ -60,6 +72,7 @@ where
     uploader: Uploader<Client>,
     next_handle: AtomicU64,
     file_handles: AsyncRwLock<HashMap<u64, Arc<FileHandle<Client>>>>,
+    latency_tracker: Option<Arc<LatencyTracker>>,
 }
 
 /// Reply to a `lookup` call
@@ -165,6 +178,12 @@ where
                 .default_checksum_algorithm(config.use_upload_checksums.then_some(ChecksumAlgorithm::Crc32c)),
         );
 
+        let latency_tracker = if config.latency_config.enabled {
+            Some(Arc::new(LatencyTracker::new(config.latency_config.clone())))
+        } else {
+            None
+        };
+
         Self {
             config,
             metablock: Arc::new(metablock),
@@ -172,6 +191,7 @@ where
             uploader,
             next_handle: AtomicU64::new(1),
             file_handles: AsyncRwLock::new(HashMap::new()),
+            latency_tracker,
         }
     }
 
@@ -414,6 +434,11 @@ where
         Ok(Opened { fh, flags: reply_flags })
     }
 
+    /// Read data from a file
+    ///
+    /// This method includes latency tracking when enabled via `MOUNTPOINT_LATENCY_FILE`.
+    /// Latencies are measured end-to-end for the entire read operation and recorded
+    /// using HDR Histogram for accurate distribution capture.
     #[allow(clippy::too_many_arguments)] // We don't get to choose this interface
     pub async fn read(
         &self,
@@ -450,11 +475,23 @@ where
             FileHandleState::Write(_) => return Err(err!(libc::EBADF, "file handle is not open for reads")),
         };
 
-        request
-            .read(offset as u64, size as usize)
-            .await?
-            .into_bytes()
-            .map_err(|e| err!(libc::EIO, source:e, "integrity error"))
+        // Track read latency end-to-end when enabled via MOUNTPOINT_LATENCY_FILE
+        // Uses zero-overhead macro that only measures time when tracking is enabled
+        if let Some(tracker) = &self.latency_tracker {
+            crate::track_read_latency!(tracker, size, {
+                request
+                    .read(offset as u64, size as usize)
+                    .await?
+                    .into_bytes()
+                    .map_err(|e| err!(libc::EIO, source:e, "integrity error"))
+            })
+        } else {
+            request
+                .read(offset as u64, size as usize)
+                .await?
+                .into_bytes()
+                .map_err(|e| err!(libc::EIO, source:e, "integrity error"))
+        }
     }
 
     pub async fn mknod(
