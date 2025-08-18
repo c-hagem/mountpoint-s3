@@ -169,8 +169,7 @@ impl CliArgs {
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     init_tracing_subscriber();
     let _metrics_handle = mountpoint_s3_fs::metrics::install(None);
 
@@ -182,12 +181,17 @@ async fn main() -> anyhow::Result<()> {
     let client = S3CrtClient::new(client_config).context("failed to create S3 CRT client")?;
     let mem_limiter = Arc::new(MemoryLimiter::new(pool, args.memory_target_in_bytes()));
 
+    // Create tokio runtime for async operations
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create tokio runtime");
+
     // Verify if all objects exist and collect metadata
     let mut object_metadata = Vec::new();
     for key in &args.s3_keys {
-        let head_result = client
-            .head_object(bucket, key, &HeadObjectParams::new())
-            .await
+        let head_result = rt
+            .block_on(client.head_object(bucket, key, &HeadObjectParams::new()))
             .with_context(|| format!("HeadObject failed for {key}"))?;
         object_metadata.push((ObjectId::new(key.to_string(), head_result.etag), head_result.size));
     }
@@ -198,24 +202,26 @@ async fn main() -> anyhow::Result<()> {
     let mut iter_results = Vec::new();
     let max_duration = args.max_duration.unwrap_or(Duration::from_secs(SECONDS_PER_DAY));
     let timeout: Instant = total_start.checked_add(max_duration).expect("Duration overflow error");
+
+    // Get ELG thread setting or CPU count for prefetch runtime
+    const ENV_VAR_KEY_CRT_ELG_THREADS: &str = "UNSTABLE_CRT_EVENTLOOP_THREADS";
+    let thread_count = std::env::var_os(ENV_VAR_KEY_CRT_ELG_THREADS)
+        .and_then(|s| s.to_string_lossy().parse::<usize>().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1));
+
     while iteration < args.iterations && Instant::now() < timeout {
         let received_bytes = Arc::new(AtomicU64::new(0));
         let start = Instant::now();
 
-        // Create tokio runtime for the prefetcher using ELG thread setting or CPU count
-        const ENV_VAR_KEY_CRT_ELG_THREADS: &str = "UNSTABLE_CRT_EVENTLOOP_THREADS";
-        let thread_count = std::env::var_os(ENV_VAR_KEY_CRT_ELG_THREADS)
-            .and_then(|s| s.to_string_lossy().parse::<usize>().ok())
-            .unwrap_or_else(|| std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1));
-
-        let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+        // Create prefetch runtime for this iteration using ELG thread setting
+        let prefetch_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(thread_count)
             .enable_all()
             .build()
-            .expect("Failed to create tokio runtime");
+            .expect("Failed to create prefetch runtime");
 
         let manager = Prefetcher::default_builder(client.clone()).build(
-            tokio_runtime,
+            prefetch_runtime,
             mem_limiter.clone(),
             PrefetcherConfig::default(),
         );
@@ -229,7 +235,7 @@ async fn main() -> anyhow::Result<()> {
             let request = manager.prefetch(bucket.to_string(), object_id.clone(), size);
             let read_size = args.read_size;
 
-            let task = tokio::spawn(async move {
+            let task = rt.spawn(async move {
                 let result = wait_for_download(request, size, read_size as u64, timeout).await;
                 if let Ok(bytes_read) = result {
                     received_bytes.fetch_add(bytes_read, Ordering::SeqCst);
@@ -247,7 +253,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         for task in download_tasks {
-            task.await.unwrap();
+            rt.block_on(task).unwrap();
         }
 
         let elapsed = start.elapsed();
