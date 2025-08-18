@@ -192,15 +192,15 @@ impl<Client> Debug for PartStream<Client> {
 /// [ObjectPartStream] implementation which delegates retrieving object data to a [Client].
 #[derive(Debug)]
 pub struct ClientPartStream<Client: ObjectClient + Clone + Send + Sync + 'static> {
-    runtime: tokio::runtime::Handle,
+    tokio_runtime: tokio::runtime::Handle,
     client: Client,
     mem_limiter: Arc<MemoryLimiter>,
 }
 
 impl<Client: ObjectClient + Clone + Send + Sync + 'static> ClientPartStream<Client> {
-    pub fn new(runtime: tokio::runtime::Runtime, client: Client, mem_limiter: Arc<MemoryLimiter>) -> Self {
+    pub fn new(tokio_runtime: tokio::runtime::Runtime, client: Client, mem_limiter: Arc<MemoryLimiter>) -> Self {
         Self {
-            runtime: runtime.handle().clone(),
+            tokio_runtime: tokio_runtime.handle().clone(),
             client,
             mem_limiter,
         }
@@ -231,7 +231,8 @@ impl<Client: ObjectClient + Clone + Send + Sync + 'static> ObjectPartStream<Clie
 
         let span = debug_span!("prefetch", ?range);
         let client = self.client.clone();
-        let task_handle = self.runtime.spawn(
+
+        let task_handle = self.tokio_runtime.spawn(
             async move {
                 let first_read_window_end_offset = config.range.start() + config.initial_read_window_size as u64;
                 let request_stream = read_from_client_stream(

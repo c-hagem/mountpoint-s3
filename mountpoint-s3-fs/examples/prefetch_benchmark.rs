@@ -213,7 +213,7 @@ fn main() -> anyhow::Result<()> {
         let received_bytes = Arc::new(AtomicU64::new(0));
         let start = Instant::now();
 
-        // Create prefetch runtime for this iteration using ELG thread setting
+        // Create tokio runtime for this iteration using ELG thread setting
         let prefetch_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(thread_count)
             .enable_all()

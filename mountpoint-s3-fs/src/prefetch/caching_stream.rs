@@ -26,21 +26,21 @@ use super::task::RequestTask;
 #[derive(Debug)]
 pub struct CachingPartStream<Cache, Client: ObjectClient + Clone + Send + Sync + 'static> {
     cache: Arc<Cache>,
-    runtime: tokio::runtime::Handle,
+    tokio_runtime: tokio::runtime::Handle,
     client: Client,
     mem_limiter: Arc<MemoryLimiter>,
 }
 
 impl<Cache, Client: ObjectClient + Clone + Send + Sync + 'static> CachingPartStream<Cache, Client> {
     pub fn new(
-        runtime: tokio::runtime::Runtime,
+        tokio_runtime: tokio::runtime::Runtime,
         client: Client,
         mem_limiter: Arc<MemoryLimiter>,
         cache: Cache,
     ) -> Self {
         Self {
             cache: Arc::new(cache),
-            runtime: runtime.handle().clone(),
+            tokio_runtime: tokio_runtime.handle().clone(),
             client,
             mem_limiter,
         }
@@ -71,7 +71,7 @@ where
             let request = CachingRequest::new(
                 self.client.clone(),
                 self.cache.clone(),
-                self.runtime.clone(),
+                self.tokio_runtime.clone(),
                 backpressure_limiter,
                 config,
             );
@@ -79,7 +79,7 @@ where
             request.get_from_cache(range, part_queue_producer).instrument(span)
         };
 
-        let task_handle = self.runtime.spawn(request_task);
+        let task_handle = self.tokio_runtime.spawn(request_task);
 
         RequestTask::from_handle(task_handle, range, part_queue, backpressure_controller)
     }
@@ -93,7 +93,7 @@ where
 struct CachingRequest<Client: ObjectClient, Cache> {
     client: Client,
     cache: Arc<Cache>,
-    runtime: tokio::runtime::Handle,
+    tokio_runtime: tokio::runtime::Handle,
     backpressure_limiter: BackpressureLimiter,
     config: RequestTaskConfig,
 }
@@ -106,14 +106,14 @@ where
     fn new(
         client: Client,
         cache: Arc<Cache>,
-        runtime: tokio::runtime::Handle,
+        tokio_runtime: tokio::runtime::Handle,
         backpressure_limiter: BackpressureLimiter,
         config: RequestTaskConfig,
     ) -> Self {
         Self {
             client,
             cache,
-            runtime,
+            tokio_runtime,
             backpressure_limiter,
             config,
         }
@@ -234,7 +234,7 @@ where
             block_index: block_range.start,
             block_offset: block_range.start * block_size,
             cache: self.cache.clone(),
-            runtime: self.runtime.clone(),
+            tokio_runtime: self.tokio_runtime.clone(),
         };
         part_composer.try_compose_parts(request_stream, range).await;
     }
@@ -258,7 +258,7 @@ struct CachingPartComposer<E: std::error::Error, Cache> {
     block_index: u64,
     block_offset: u64,
     cache: Arc<Cache>,
-    runtime: tokio::runtime::Handle,
+    tokio_runtime: tokio::runtime::Handle,
 }
 
 impl<E, Cache> CachingPartComposer<E, Cache>
@@ -364,7 +364,7 @@ where
     ) {
         let object_id = object_id.clone();
         let cache = self.cache.clone();
-        self.runtime.spawn(async move {
+        self.tokio_runtime.spawn(async move {
             let start = Instant::now();
             if let Err(error) = cache
                 .put_block(object_id.clone(), block_index, block_offset, block, range.object_size())

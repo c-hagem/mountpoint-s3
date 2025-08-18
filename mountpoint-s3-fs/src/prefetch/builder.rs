@@ -37,11 +37,11 @@ where
     /// Build a [Prefetcher] instance.
     pub fn build(
         self,
-        runtime: tokio::runtime::Runtime,
+        tokio_runtime: tokio::runtime::Runtime,
         mem_limiter: Arc<MemoryLimiter>,
         prefetcher_config: PrefetcherConfig,
     ) -> Prefetcher<Client> {
-        self.inner.build(runtime, mem_limiter, prefetcher_config)
+        self.inner.build(tokio_runtime, mem_limiter, prefetcher_config)
     }
 }
 
@@ -57,7 +57,7 @@ where
 {
     fn build(
         self: Box<Self>,
-        runtime: tokio::runtime::Runtime,
+        tokio_runtime: tokio::runtime::Runtime,
         mem_limiter: Arc<MemoryLimiter>,
         prefetcher_config: PrefetcherConfig,
     ) -> Prefetcher<Client>;
@@ -73,11 +73,11 @@ where
 {
     fn build(
         self: Box<Self>,
-        runtime: tokio::runtime::Runtime,
+        tokio_runtime: tokio::runtime::Runtime,
         mem_limiter: Arc<MemoryLimiter>,
         prefetcher_config: PrefetcherConfig,
     ) -> Prefetcher<Client> {
-        let part_stream = ClientPartStream::new(runtime, self.client, mem_limiter);
+        let part_stream = ClientPartStream::new(tokio_runtime, self.client, mem_limiter);
         Prefetcher::new(PartStream::new(part_stream), prefetcher_config)
     }
 }
@@ -94,11 +94,11 @@ where
 {
     fn build(
         self: Box<Self>,
-        runtime: tokio::runtime::Runtime,
+        tokio_runtime: tokio::runtime::Runtime,
         mem_limiter: Arc<MemoryLimiter>,
         prefetcher_config: PrefetcherConfig,
     ) -> Prefetcher<Client> {
-        let part_stream = CachingPartStream::new(runtime, self.client, mem_limiter, self.cache);
+        let part_stream = CachingPartStream::new(tokio_runtime, self.client, mem_limiter, self.cache);
         Prefetcher::new(PartStream::new(part_stream), prefetcher_config)
     }
 }
