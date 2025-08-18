@@ -2,16 +2,16 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
+
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use clap::{Parser, value_parser};
-use futures::executor::block_on;
+
 use mountpoint_s3_client::config::{EndpointConfig, RustLogAdapter, S3ClientConfig};
 use mountpoint_s3_client::types::HeadObjectParams;
 use mountpoint_s3_client::{ObjectClient, S3CrtClient};
-use mountpoint_s3_fs::Runtime;
+
 use mountpoint_s3_fs::mem_limiter::MemoryLimiter;
 use mountpoint_s3_fs::memory::PagedPool;
 use mountpoint_s3_fs::object::ObjectId;
@@ -169,7 +169,8 @@ impl CliArgs {
     }
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     init_tracing_subscriber();
     let _metrics_handle = mountpoint_s3_fs::metrics::install(None);
 
@@ -180,18 +181,16 @@ fn main() -> anyhow::Result<()> {
     let client_config = args.s3_client_config().memory_pool(pool.clone());
     let client = S3CrtClient::new(client_config).context("failed to create S3 CRT client")?;
     let mem_limiter = Arc::new(MemoryLimiter::new(pool, args.memory_target_in_bytes()));
-    let runtime = Runtime::new(client.event_loop_group());
 
     // Verify if all objects exist and collect metadata
-    let object_metadata: Vec<(ObjectId, u64)> = args
-        .s3_keys
-        .iter()
-        .map(|key| {
-            let head_result = block_on(client.head_object(bucket, key, &HeadObjectParams::new()))
-                .with_context(|| format!("HeadObject failed for {key}"))?;
-            Ok((ObjectId::new(key.to_string(), head_result.etag), head_result.size))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut object_metadata = Vec::new();
+    for key in &args.s3_keys {
+        let head_result = client
+            .head_object(bucket, key, &HeadObjectParams::new())
+            .await
+            .with_context(|| format!("HeadObject failed for {key}"))?;
+        object_metadata.push((ObjectId::new(key.to_string(), head_result.etag), head_result.size));
+    }
 
     let total_start = Instant::now();
     let mut iteration = 0;
@@ -202,42 +201,54 @@ fn main() -> anyhow::Result<()> {
     while iteration < args.iterations && Instant::now() < timeout {
         let received_bytes = Arc::new(AtomicU64::new(0));
         let start = Instant::now();
+
+        // Create tokio runtime for the prefetcher using ELG thread setting or CPU count
+        const ENV_VAR_KEY_CRT_ELG_THREADS: &str = "UNSTABLE_CRT_EVENTLOOP_THREADS";
+        let thread_count = std::env::var_os(ENV_VAR_KEY_CRT_ELG_THREADS)
+            .and_then(|s| s.to_string_lossy().parse::<usize>().ok())
+            .unwrap_or_else(|| std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1));
+
+        let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(thread_count)
+            .enable_all()
+            .build()
+            .expect("Failed to create tokio runtime");
+
         let manager = Prefetcher::default_builder(client.clone()).build(
-            runtime.clone(),
+            tokio_runtime,
             mem_limiter.clone(),
             PrefetcherConfig::default(),
         );
 
-        thread::scope(|scope| {
-            let mut download_tasks = Vec::new();
+        let mut download_tasks = Vec::new();
 
-            for (object_id, size) in &object_metadata {
-                let received_bytes = received_bytes.clone();
-                let object_id = object_id.clone();
-                let request = manager.prefetch(bucket.to_string(), object_id.clone(), *size);
-                let read_size = args.read_size;
+        for (object_id, size) in &object_metadata {
+            let received_bytes = received_bytes.clone();
+            let object_id = object_id.clone();
+            let size = *size;
+            let request = manager.prefetch(bucket.to_string(), object_id.clone(), size);
+            let read_size = args.read_size;
 
-                let task = scope.spawn(move || {
-                    let result = block_on(wait_for_download(request, *size, read_size as u64, timeout));
-                    if let Ok(bytes_read) = result {
-                        received_bytes.fetch_add(bytes_read, Ordering::SeqCst);
-                    } else {
-                        // As object download failures can produce
-                        // misleading results, exit the benchmarks
-                        // to avoid confusion.
-                        eprintln!("Download failed: {:?}", result.err());
-                        eprintln!("Exiting benchmarks due to download failure");
-                        std::process::exit(1);
-                    }
-                });
+            let task = tokio::spawn(async move {
+                let result = wait_for_download(request, size, read_size as u64, timeout).await;
+                if let Ok(bytes_read) = result {
+                    received_bytes.fetch_add(bytes_read, Ordering::SeqCst);
+                } else {
+                    // As object download failures can produce
+                    // misleading results, exit the benchmarks
+                    // to avoid confusion.
+                    eprintln!("Download failed: {:?}", result.err());
+                    eprintln!("Exiting benchmarks due to download failure");
+                    std::process::exit(1);
+                }
+            });
 
-                download_tasks.push(task);
-            }
+            download_tasks.push(task);
+        }
 
-            for task in download_tasks {
-                task.join().unwrap();
-            }
-        });
+        for task in download_tasks {
+            task.await.unwrap();
+        }
 
         let elapsed = start.elapsed();
         let received_size = received_bytes.load(Ordering::SeqCst);
