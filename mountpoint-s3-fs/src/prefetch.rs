@@ -490,14 +490,13 @@ mod tests {
     // It's convenient to write test constants like "1 * 1024 * 1024" for symmetry
     #![allow(clippy::identity_op)]
 
-    use crate::Runtime;
     use crate::data_cache::InMemoryDataCache;
     use crate::mem_limiter::{MINIMUM_MEM_LIMIT, MemoryLimiter};
     use crate::memory::PagedPool;
     use crate::sync::Arc;
 
     use super::*;
-    use futures::executor::{ThreadPool, block_on};
+    use futures::executor::block_on;
     use mountpoint_s3_client::failure_client::{
         CountdownFailureConfig, GetObjectFailureMode, countdown_failure_client,
     };
@@ -544,7 +543,8 @@ mod tests {
     {
         let pool = PagedPool::new_with_candidate_sizes([client.read_part_size(), client.write_part_size()]);
         let mem_limiter = Arc::new(MemoryLimiter::new(pool, MINIMUM_MEM_LIMIT));
-        let runtime = Runtime::new(ThreadPool::builder().pool_size(1).create().unwrap());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
         let builder = match prefetcher_type {
             PrefetcherType::Default => Prefetcher::default_builder(client),
             PrefetcherType::InMemoryCache(block_size) => {

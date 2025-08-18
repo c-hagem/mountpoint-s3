@@ -47,6 +47,7 @@ syslog = "7.0.0"
 tempfile = "3.20.0"
 thiserror = "2.0.12"
 time = { version = "0.3.41", features = ["macros", "formatting", "serde-well-known"] }
+tokio = { version = "1.45.1", features = ["full"] }
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-log = "0.2.0"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
@@ -80,7 +81,6 @@ sha2 = "0.10.9"
 shuttle = { version = "0.8.1" }
 syscalls = {version = "0.6.18", default-features = false}
 test-case = "3.3.1"
-tokio = { version = "1.45.1", features = ["rt", "macros"] }
 walkdir = "2.5.0"
 
 [features]

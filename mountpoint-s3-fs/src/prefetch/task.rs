@@ -1,5 +1,5 @@
-use futures::future::RemoteHandle;
 use mountpoint_s3_client::ObjectClient;
+use tokio::task::JoinHandle;
 
 use super::PrefetchReadError;
 use super::backpressure_controller::BackpressureController;
@@ -13,7 +13,7 @@ use super::part_stream::RequestRange;
 pub struct RequestTask<Client: ObjectClient> {
     /// Handle on the task/future. The future is cancelled when handle is dropped. This is None if
     /// the request is fake (created by seeking backwards in the stream)
-    _task_handle: RemoteHandle<()>,
+    _task_handle: JoinHandle<()>,
     remaining: usize,
     range: RequestRange,
     part_queue: PartQueue<Client>,
@@ -22,7 +22,7 @@ pub struct RequestTask<Client: ObjectClient> {
 
 impl<Client: ObjectClient> RequestTask<Client> {
     pub fn from_handle(
-        task_handle: RemoteHandle<()>,
+        task_handle: JoinHandle<()>,
         range: RequestRange,
         part_queue: PartQueue<Client>,
         backpressure_controller: BackpressureController,

@@ -1,5 +1,5 @@
 use async_stream::try_stream;
-use futures::task::SpawnExt;
+
 use futures::{Stream, StreamExt, pin_mut};
 use mountpoint_s3_client::ObjectClient;
 use mountpoint_s3_client::types::{ClientBackpressureHandle, GetBodyPart, GetObjectParams, GetObjectResponse};
@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::{fmt::Debug, ops::Range};
 use tracing::{Instrument, debug_span, error, trace};
 
-use crate::async_util::Runtime;
 use crate::checksums::ChecksummedBytes;
 use crate::mem_limiter::MemoryLimiter;
 use crate::object::ObjectId;
@@ -193,15 +192,15 @@ impl<Client> Debug for PartStream<Client> {
 /// [ObjectPartStream] implementation which delegates retrieving object data to a [Client].
 #[derive(Debug)]
 pub struct ClientPartStream<Client: ObjectClient + Clone + Send + Sync + 'static> {
-    runtime: Runtime,
+    runtime: tokio::runtime::Handle,
     client: Client,
     mem_limiter: Arc<MemoryLimiter>,
 }
 
 impl<Client: ObjectClient + Clone + Send + Sync + 'static> ClientPartStream<Client> {
-    pub fn new(runtime: Runtime, client: Client, mem_limiter: Arc<MemoryLimiter>) -> Self {
+    pub fn new(runtime: tokio::runtime::Runtime, client: Client, mem_limiter: Arc<MemoryLimiter>) -> Self {
         Self {
-            runtime,
+            runtime: runtime.handle().clone(),
             client,
             mem_limiter,
         }
@@ -232,30 +231,27 @@ impl<Client: ObjectClient + Clone + Send + Sync + 'static> ObjectPartStream<Clie
 
         let span = debug_span!("prefetch", ?range);
         let client = self.client.clone();
-        let task_handle = self
-            .runtime
-            .spawn_with_handle(
-                async move {
-                    let first_read_window_end_offset = config.range.start() + config.initial_read_window_size as u64;
-                    let request_stream = read_from_client_stream(
-                        &mut backpressure_limiter,
-                        &client,
-                        config.bucket,
-                        config.object_id.clone(),
-                        first_read_window_end_offset,
-                        config.range,
-                    );
+        let task_handle = self.runtime.spawn(
+            async move {
+                let first_read_window_end_offset = config.range.start() + config.initial_read_window_size as u64;
+                let request_stream = read_from_client_stream(
+                    &mut backpressure_limiter,
+                    &client,
+                    config.bucket,
+                    config.object_id.clone(),
+                    first_read_window_end_offset,
+                    config.range,
+                );
 
-                    let part_composer = ClientPartComposer {
-                        part_queue_producer,
-                        object_id: config.object_id,
-                        preferred_part_size: config.preferred_part_size,
-                    };
-                    part_composer.try_compose_parts(request_stream).await;
-                }
-                .instrument(span),
-            )
-            .unwrap();
+                let part_composer = ClientPartComposer {
+                    part_queue_producer,
+                    object_id: config.object_id,
+                    preferred_part_size: config.preferred_part_size,
+                };
+                part_composer.try_compose_parts(request_stream).await;
+            }
+            .instrument(span),
+        );
 
         RequestTask::from_handle(task_handle, range, part_queue, backpressure_controller)
     }

@@ -153,7 +153,10 @@ where
         trace!(?config, "new filesystem");
 
         let mem_limiter = Arc::new(MemoryLimiter::new(pool.clone(), config.mem_limit));
-        let prefetcher = prefetch_builder.build(runtime.clone(), mem_limiter.clone(), config.prefetcher_config);
+        // Create a tokio Runtime
+        //
+        let rt = tokio::runtime::Runtime::new().expect("runtime should be created");
+        let prefetcher = prefetch_builder.build(rt, mem_limiter.clone(), config.prefetcher_config);
         let uploader = Uploader::new(
             client.clone(),
             runtime,

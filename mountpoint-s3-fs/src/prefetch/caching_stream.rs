@@ -1,13 +1,12 @@
 use std::time::Instant;
 use std::{ops::Range, sync::Arc};
 
-use futures::task::{Spawn, SpawnExt};
 use futures::{Stream, StreamExt, pin_mut};
+
 use mountpoint_s3_client::ObjectClient;
 use mountpoint_s3_client::types::GetBodyPart;
 use tracing::{Instrument, debug_span, trace, warn};
 
-use crate::async_util::Runtime;
 use crate::checksums::ChecksummedBytes;
 use crate::data_cache::{BlockIndex, DataCache};
 use crate::mem_limiter::MemoryLimiter;
@@ -27,16 +26,21 @@ use super::task::RequestTask;
 #[derive(Debug)]
 pub struct CachingPartStream<Cache, Client: ObjectClient + Clone + Send + Sync + 'static> {
     cache: Arc<Cache>,
-    runtime: Runtime,
+    runtime: tokio::runtime::Handle,
     client: Client,
     mem_limiter: Arc<MemoryLimiter>,
 }
 
 impl<Cache, Client: ObjectClient + Clone + Send + Sync + 'static> CachingPartStream<Cache, Client> {
-    pub fn new(runtime: Runtime, client: Client, mem_limiter: Arc<MemoryLimiter>, cache: Cache) -> Self {
+    pub fn new(
+        runtime: tokio::runtime::Runtime,
+        client: Client,
+        mem_limiter: Arc<MemoryLimiter>,
+        cache: Cache,
+    ) -> Self {
         Self {
             cache: Arc::new(cache),
-            runtime,
+            runtime: runtime.handle().clone(),
             client,
             mem_limiter,
         }
@@ -75,7 +79,7 @@ where
             request.get_from_cache(range, part_queue_producer).instrument(span)
         };
 
-        let task_handle = self.runtime.spawn_with_handle(request_task).unwrap();
+        let task_handle = self.runtime.spawn(request_task);
 
         RequestTask::from_handle(task_handle, range, part_queue, backpressure_controller)
     }
@@ -89,7 +93,7 @@ where
 struct CachingRequest<Client: ObjectClient, Cache> {
     client: Client,
     cache: Arc<Cache>,
-    runtime: Runtime,
+    runtime: tokio::runtime::Handle,
     backpressure_limiter: BackpressureLimiter,
     config: RequestTaskConfig,
 }
@@ -102,7 +106,7 @@ where
     fn new(
         client: Client,
         cache: Arc<Cache>,
-        runtime: Runtime,
+        runtime: tokio::runtime::Handle,
         backpressure_limiter: BackpressureLimiter,
         config: RequestTaskConfig,
     ) -> Self {
@@ -247,21 +251,20 @@ where
     }
 }
 
-struct CachingPartComposer<E: std::error::Error, Cache, Runtime: Spawn> {
+struct CachingPartComposer<E: std::error::Error, Cache> {
     part_queue_producer: PartQueueProducer<E>,
     cache_key: ObjectId,
     original_range: RequestRange,
     block_index: u64,
     block_offset: u64,
     cache: Arc<Cache>,
-    runtime: Runtime,
+    runtime: tokio::runtime::Handle,
 }
 
-impl<E, Cache, Runtime> CachingPartComposer<E, Cache, Runtime>
+impl<E, Cache> CachingPartComposer<E, Cache>
 where
     E: std::error::Error + Send + Sync,
     Cache: DataCache + Send + Sync + 'static,
-    Runtime: Spawn,
 {
     async fn try_compose_parts(
         &mut self,
@@ -361,18 +364,16 @@ where
     ) {
         let object_id = object_id.clone();
         let cache = self.cache.clone();
-        self.runtime
-            .spawn(async move {
-                let start = Instant::now();
-                if let Err(error) = cache
-                    .put_block(object_id.clone(), block_index, block_offset, block, range.object_size())
-                    .await
-                {
-                    warn!(key=?object_id, block_index, ?error, "failed to update cache");
-                }
-                metrics::histogram!("prefetch.cache_update_duration_us").record(start.elapsed().as_micros() as f64);
-            })
-            .unwrap();
+        self.runtime.spawn(async move {
+            let start = Instant::now();
+            if let Err(error) = cache
+                .put_block(object_id.clone(), block_index, block_offset, block, range.object_size())
+                .await
+            {
+                warn!(key=?object_id, block_index, ?error, "failed to update cache");
+            }
+            metrics::histogram!("prefetch.cache_update_duration_us").record(start.elapsed().as_micros() as f64);
+        });
     }
 }
 
@@ -400,7 +401,7 @@ mod tests {
 
     use std::{thread, time::Duration};
 
-    use futures::executor::{ThreadPool, block_on};
+    use futures::executor::block_on;
     use mountpoint_s3_client::{
         mock_client::{MockClient, MockObject, Operation},
         types::ETag,
@@ -458,7 +459,7 @@ mod tests {
         let mem_limiter = Arc::new(MemoryLimiter::new(pool, MINIMUM_MEM_LIMIT));
         mock_client.add_object(key, object.clone());
 
-        let runtime = Runtime::new(ThreadPool::builder().pool_size(1).create().unwrap());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
         let stream = CachingPartStream::new(runtime, mock_client.clone(), mem_limiter.clone(), cache);
         let range = RequestRange::new(object_size, offset as u64, preferred_size);
         let expected_start_block = (range.start() as usize).div_euclid(block_size);
@@ -541,7 +542,7 @@ mod tests {
         let mem_limiter = Arc::new(MemoryLimiter::new(pool, MINIMUM_MEM_LIMIT));
         mock_client.add_object(key, object.clone());
 
-        let runtime = Runtime::new(ThreadPool::builder().pool_size(1).create().unwrap());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
         let stream = CachingPartStream::new(runtime, mock_client, mem_limiter.clone(), cache);
 
         for offset in [0, 512 * KB, 1 * MB, 4 * MB, 9 * MB] {

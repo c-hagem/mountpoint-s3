@@ -2,7 +2,7 @@ use crate::{data_cache::DataCache, sync::Arc};
 
 use mountpoint_s3_client::ObjectClient;
 
-use crate::{Runtime, mem_limiter::MemoryLimiter};
+use crate::mem_limiter::MemoryLimiter;
 
 use super::caching_stream::CachingPartStream;
 use super::part_stream::{ClientPartStream, PartStream};
@@ -37,7 +37,7 @@ where
     /// Build a [Prefetcher] instance.
     pub fn build(
         self,
-        runtime: Runtime,
+        runtime: tokio::runtime::Runtime,
         mem_limiter: Arc<MemoryLimiter>,
         prefetcher_config: PrefetcherConfig,
     ) -> Prefetcher<Client> {
@@ -57,7 +57,7 @@ where
 {
     fn build(
         self: Box<Self>,
-        runtime: Runtime,
+        runtime: tokio::runtime::Runtime,
         mem_limiter: Arc<MemoryLimiter>,
         prefetcher_config: PrefetcherConfig,
     ) -> Prefetcher<Client>;
@@ -73,7 +73,7 @@ where
 {
     fn build(
         self: Box<Self>,
-        runtime: Runtime,
+        runtime: tokio::runtime::Runtime,
         mem_limiter: Arc<MemoryLimiter>,
         prefetcher_config: PrefetcherConfig,
     ) -> Prefetcher<Client> {
@@ -94,7 +94,7 @@ where
 {
     fn build(
         self: Box<Self>,
-        runtime: Runtime,
+        runtime: tokio::runtime::Runtime,
         mem_limiter: Arc<MemoryLimiter>,
         prefetcher_config: PrefetcherConfig,
     ) -> Prefetcher<Client> {
